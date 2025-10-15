@@ -368,12 +368,12 @@ class VibeVoiceCore:
         silence_waveform = torch.zeros(1, 1, num_samples, dtype=torch.float32)
         return silence_waveform
     
-    def _split_text_into_chunks(self, text: str, max_words: int = 250) -> List[str]:
+    def _split_text_into_chunks(self, text: str, max_words: int = 150) -> List[str]:
         """Split long text into manageable chunks at sentence boundaries
         
         Args:
             text: The text to split
-            max_words: Maximum words per chunk (default 250 for safety)
+            max_words: Maximum words per chunk (default 150 for stability with long texts)
         
         Returns:
             List of text chunks
@@ -450,7 +450,7 @@ class VibeVoiceCore:
     def generate_speech(self, text: str, voice_samples: Optional[List[np.ndarray]] = None,
                        cfg_scale: float = 1.3, seed: int = 42, diffusion_steps: int = 20,
                        use_sampling: bool = False, temperature: float = 0.95, top_p: float = 0.95,
-                       num_speakers: int = 1, max_words_per_chunk: int = 250) -> Tuple[np.ndarray, int]:
+                       num_speakers: int = 1, max_words_per_chunk: int = 150) -> Tuple[np.ndarray, int]:
         """Generate speech from text with automatic chunking for long texts
         
         Args:
@@ -463,7 +463,7 @@ class VibeVoiceCore:
             temperature: Sampling temperature
             top_p: Top-p sampling parameter
             num_speakers: Number of speakers
-            max_words_per_chunk: Maximum words per chunk (default 250)
+            max_words_per_chunk: Maximum words per chunk (default 150, reduced for stability)
         
         Returns:
             Tuple of (audio_array, sample_rate)
@@ -553,7 +553,26 @@ class VibeVoiceCore:
         device = next(self.model.parameters()).device
         inputs = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
         
-        logger.info(f"Generating audio with {diffusion_steps} diffusion steps...")
+        # Calculate appropriate max_new_tokens
+        # For speech generation, we need enough tokens for the audio output
+        # A reasonable estimate is ~50 tokens per second of audio, and text takes ~0.5s per word to speak
+        # So for safety, we use a generous upper limit
+        input_length = inputs['input_ids'].shape[-1]
+        
+        # Check if we have max_position_embeddings from config
+        if hasattr(self.model.config, 'decoder_config') and hasattr(self.model.config.decoder_config, 'max_position_embeddings'):
+            max_pos_emb = self.model.config.decoder_config.max_position_embeddings
+            # Use 80% of remaining positions to be safe, with a minimum of 1024 tokens
+            calculated_max_tokens = max(1024, int((max_pos_emb - input_length) * 0.8))
+            # Cap at reasonable maximum (8192) to avoid excessive memory usage
+            max_new_tokens = min(8192, calculated_max_tokens)
+            logger.debug(f"Input length: {input_length}, max_position_embeddings: {max_pos_emb}, calculated max_new_tokens: {max_new_tokens}")
+        else:
+            # Fallback to a safe default if config is not available
+            max_new_tokens = 4096
+            logger.debug(f"Using default max_new_tokens: {max_new_tokens}")
+        
+        logger.info(f"Generating audio with {diffusion_steps} diffusion steps (max_new_tokens={max_new_tokens})...")
         
         # Generate
         with torch.no_grad():
@@ -562,7 +581,7 @@ class VibeVoiceCore:
                     **inputs,
                     tokenizer=self.processor.tokenizer,
                     cfg_scale=cfg_scale,
-                    max_new_tokens=None,
+                    max_new_tokens=max_new_tokens,
                     do_sample=True,
                     temperature=temperature,
                     top_p=top_p,
@@ -572,7 +591,7 @@ class VibeVoiceCore:
                     **inputs,
                     tokenizer=self.processor.tokenizer,
                     cfg_scale=cfg_scale,
-                    max_new_tokens=None,
+                    max_new_tokens=max_new_tokens,
                     do_sample=False,
                 )
             
