@@ -4,16 +4,18 @@ Provides REST API endpoints for TTS generation
 """
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional, List
+from pydantic import BaseModel, Field
+from typing import Optional, List, Literal
 import tempfile
 import soundfile as sf
 import os
 import logging
 from pathlib import Path
 from vibevoice_core import VibeVoiceCore, get_optimal_device
+import io
+import base64
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("VibeVoiceAPI")
@@ -44,7 +46,7 @@ class TTSRequest(BaseModel):
     model_name: str
     attention_type: str = "auto"
     quantize_llm: str = "full precision"
-    diffusion_steps: int = 20
+    diffusion_steps: int = 5  # Reduced for faster API response
     seed: int = 42
     cfg_scale: float = 1.3
     use_sampling: bool = False
@@ -58,7 +60,7 @@ class MultiSpeakerTTSRequest(BaseModel):
     model_name: str
     attention_type: str = "auto"
     quantize_llm: str = "full precision"
-    diffusion_steps: int = 20
+    diffusion_steps: int = 5  # Reduced for faster API response
     seed: int = 42
     cfg_scale: float = 1.3
     use_sampling: bool = False
@@ -66,6 +68,42 @@ class MultiSpeakerTTSRequest(BaseModel):
     top_p: float = 0.95
     voice_speed_factor: float = 1.0
     free_memory: bool = True
+
+# OpenAI-compatible models
+class OpenAITTSRequest(BaseModel):
+    """OpenAI-compatible TTS request"""
+    model: Literal["tts-1", "tts-1-hd", "vibevoice-1.5b", "vibevoice-large"] = Field(
+        default="tts-1-hd",
+        description="Model to use: tts-1 (fast), tts-1-hd (quality), vibevoice-1.5b, vibevoice-large"
+    )
+    input: str = Field(..., description="The text to generate audio for", max_length=4096)
+    voice: Literal["alloy", "echo", "fable", "onyx", "nova", "shimmer"] = Field(
+        default="alloy",
+        description="Voice preset (mapped to seeds)"
+    )
+    response_format: Literal["mp3", "opus", "aac", "flac", "wav", "pcm"] = Field(
+        default="mp3",
+        description="Audio format"
+    )
+    speed: float = Field(default=1.0, ge=0.25, le=4.0, description="Speed of generated audio")
+
+# Voice presets mapping to seeds for consistency
+VOICE_PRESETS = {
+    "alloy": 42,
+    "echo": 123,
+    "fable": 456,
+    "onyx": 789,
+    "nova": 999,
+    "shimmer": 1337
+}
+
+# Model mapping
+MODEL_MAPPING = {
+    "tts-1": "VibeVoice-1.5B",
+    "tts-1-hd": "VibeVoice-Large",
+    "vibevoice-1.5b": "VibeVoice-1.5B",
+    "vibevoice-large": "VibeVoice-Large"
+}
 
 @app.get("/")
 async def root():
@@ -75,11 +113,14 @@ async def root():
         "version": "1.0.0",
         "device": get_optimal_device(),
         "models_directory": models_dir,
+        "openai_compatible": True,
         "endpoints": {
             "health": "/health",
             "models": "/models",
             "tts_single": "/tts/single",
             "tts_multi": "/tts/multi",
+            "openai_tts": "/v1/audio/speech",
+            "openai_models": "/v1/models",
             "docs": "/docs"
         }
     }
@@ -291,6 +332,121 @@ async def free_memory():
         return {"status": "success", "message": "Memory freed successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# OpenAI-compatible endpoints
+@app.post("/v1/audio/speech")
+async def openai_tts(request: OpenAITTSRequest):
+    """
+    OpenAI-compatible TTS endpoint
+    Mimics OpenAI's /v1/audio/speech API
+    """
+    try:
+        # Map model name
+        model_name = MODEL_MAPPING.get(request.model, "VibeVoice-Large")
+        
+        # Map voice to seed
+        seed = VOICE_PRESETS.get(request.voice, 42)
+        
+        # Load model
+        core.load_model(
+            model_name=model_name,
+            attention_type="auto",
+            quantize_llm="full precision"
+        )
+        
+        # Generate speech
+        audio_array, sample_rate = core.generate_speech(
+            text=request.input,
+            voice_samples=None,
+            cfg_scale=1.3,
+            seed=seed,
+            diffusion_steps=20 if "hd" in request.model or "large" in request.model else 10,
+            use_sampling=False,
+            temperature=0.95,
+            top_p=0.95,
+            num_speakers=1
+        )
+        
+        # Free memory after generation
+        core.free_memory()
+        
+        # Convert audio to requested format
+        buffer = io.BytesIO()
+        
+        if request.response_format == "wav":
+            sf.write(buffer, audio_array, sample_rate, format='WAV')
+            media_type = "audio/wav"
+        elif request.response_format == "flac":
+            sf.write(buffer, audio_array, sample_rate, format='FLAC')
+            media_type = "audio/flac"
+        elif request.response_format == "pcm":
+            # Raw PCM data
+            buffer = io.BytesIO(audio_array.tobytes())
+            media_type = "audio/pcm"
+        else:
+            # For mp3, opus, aac - convert via WAV first
+            # Note: This requires additional libraries like pydub/ffmpeg
+            # For now, default to WAV
+            sf.write(buffer, audio_array, sample_rate, format='WAV')
+            media_type = "audio/wav"
+            logger.warning(f"Format {request.response_format} not fully supported, returning WAV")
+        
+        buffer.seek(0)
+        
+        return StreamingResponse(
+            buffer,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f"attachment; filename=speech.{request.response_format}",
+                "X-Model": model_name,
+                "X-Voice": request.voice,
+                "X-Sample-Rate": str(sample_rate)
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"OpenAI TTS generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/models")
+async def openai_list_models():
+    """
+    OpenAI-compatible models endpoint
+    Lists available TTS models
+    """
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "tts-1",
+                "object": "model",
+                "created": 1699046400,
+                "owned_by": "vibevoice",
+                "description": "Fast TTS model (VibeVoice-1.5B)"
+            },
+            {
+                "id": "tts-1-hd",
+                "object": "model",
+                "created": 1699046400,
+                "owned_by": "vibevoice",
+                "description": "High quality TTS model (VibeVoice-Large)"
+            },
+            {
+                "id": "vibevoice-1.5b",
+                "object": "model",
+                "created": 1699046400,
+                "owned_by": "microsoft",
+                "description": "VibeVoice 1.5B model"
+            },
+            {
+                "id": "vibevoice-large",
+                "object": "model",
+                "created": 1699046400,
+                "owned_by": "microsoft",
+                "description": "VibeVoice Large model"
+            }
+        ]
+    }
 
 if __name__ == "__main__":
     import uvicorn

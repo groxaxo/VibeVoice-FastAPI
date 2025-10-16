@@ -32,3 +32,4 @@ dependencies:
     - protobuf
     - python-multipart
     - aiofiles
+    - flash-attn>=2.0.0

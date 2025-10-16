@@ -1,6 +1,8 @@
 # VibeVoice Standalone TTS
 
-Complete standalone implementation of Microsoft VibeVoice text-to-speech with Gradio UI and FastAPI, independent of ComfyUI.
+Complete standalone implementation of Microsoft VibeVoice text-to-speech with Gradio UI and **OpenAI-compatible FastAPI**, independent of ComfyUI.
+
+**🔥 NEW: OpenAI API Compatible!** Drop-in replacement for OpenAI's TTS API - use with the official Python SDK!
 
 ## 🚀 Quick Start
 
@@ -60,6 +62,12 @@ Access:
 - **FastAPI Docs**: http://localhost:8000/docs
 
 ## ✨ Features
+
+### 🔥 OpenAI API Compatible
+- **Drop-in Replacement**: Works with OpenAI's Python SDK - just change the base URL!
+- **Standard Endpoints**: `/v1/audio/speech` and `/v1/models`
+- **Voice Presets**: Compatible with OpenAI voice names (alloy, echo, fable, onyx, nova, shimmer)
+- **No API Key Required**: Free and open-source
 
 ### Text-to-Speech Capabilities
 - **Single Speaker**: Natural speech with voice cloning support
@@ -162,8 +170,59 @@ with open("reference_voice.wav", "rb") as voice:
     )
 ```
 
+### OpenAI API Compatible Usage 🔥
+
+**Drop-in replacement for OpenAI's TTS API!** Just change the base URL:
+
+```python
+from openai import OpenAI
+
+# Point to your VibeVoice server instead of OpenAI
+client = OpenAI(
+    api_key="not-needed",  # API key not required
+    base_url="http://localhost:8000/v1"
+)
+
+# Use exactly like OpenAI's API!
+response = client.audio.speech.create(
+    model="tts-1-hd",  # or "tts-1" for faster generation
+    voice="alloy",      # alloy, echo, fable, onyx, nova, shimmer
+    input="Hello! This is VibeVoice speaking with OpenAI compatibility!"
+)
+
+response.stream_to_file("output.mp3")
+```
+
+**Available voices (mapped to unique seeds):**
+- `alloy` - Default balanced voice
+- `echo` - Alternative voice style
+- `fable` - Narrative style
+- `onyx` - Deep voice
+- `nova` - Bright voice  
+- `shimmer` - Smooth voice
+
+**Available models:**
+- `tts-1` → VibeVoice-1.5B (fast, ~6GB VRAM)
+- `tts-1-hd` → VibeVoice-Large (best quality, ~20GB VRAM)
+- `vibevoice-1.5b` → Direct model access
+- `vibevoice-large` → Direct model access
+
+**Supported formats:** `wav`, `flac`, `pcm` (mp3/opus/aac fallback to wav)
+
+**Using with curl:**
+```bash
+curl -X POST "http://localhost:8000/v1/audio/speech" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "tts-1-hd",
+    "input": "Hello world!",
+    "voice": "nova"
+  }' --output speech.wav
+```
+
 ## 🎯 API Endpoints
 
+### Native VibeVoice Endpoints
 - `GET /` - API information
 - `GET /health` - Health check
 - `GET /models` - List available models
@@ -171,6 +230,12 @@ with open("reference_voice.wav", "rb") as voice:
 - `POST /tts/multi` - Multi-speaker TTS
 - `POST /memory/free` - Free model memory
 - `GET /docs` - Interactive API documentation
+
+### OpenAI-Compatible Endpoints 🆕
+- `POST /v1/audio/speech` - OpenAI-compatible TTS (drop-in replacement)
+- `GET /v1/models` - List models in OpenAI format
+
+The server is **fully compatible with OpenAI's TTS API** - just change the base URL!
 
 ## ⚙️ Configuration
 
