@@ -27,13 +27,14 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Add CORS middleware
+# Add CORS middleware - Enhanced for Open WebUI compatibility
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
 # Initialize VibeVoice Core
@@ -339,74 +340,105 @@ async def openai_tts(request: OpenAITTSRequest):
     """
     OpenAI-compatible TTS endpoint
     Mimics OpenAI's /v1/audio/speech API
+    Compatible with Open WebUI
     """
     try:
+        # Validate input
+        if not request.input or not request.input.strip():
+            logger.error("Empty input text received")
+            raise HTTPException(status_code=400, detail="Input text is required and cannot be empty")
+        
         # Map model name
         model_name = MODEL_MAPPING.get(request.model, "VibeVoice-Large")
+        logger.info(f"TTS Request - Model: {request.model} -> {model_name}, Voice: {request.voice}, Input length: {len(request.input)}")
         
         # Map voice to seed
         seed = VOICE_PRESETS.get(request.voice, 42)
         
-        # Load model
-        core.load_model(
-            model_name=model_name,
-            attention_type="auto",
-            quantize_llm="full precision"
-        )
+        # Load model with error handling
+        try:
+            core.load_model(
+                model_name=model_name,
+                attention_type="auto",
+                quantize_llm="full precision"
+            )
+        except Exception as model_error:
+            logger.error(f"Model loading failed: {model_error}")
+            raise HTTPException(status_code=500, detail=f"Model loading failed: {str(model_error)}")
         
-        # Generate speech
-        audio_array, sample_rate = core.generate_speech(
-            text=request.input,
-            voice_samples=None,
-            cfg_scale=1.3,
-            seed=seed,
-            diffusion_steps=20 if "hd" in request.model or "large" in request.model else 10,
-            use_sampling=False,
-            temperature=0.95,
-            top_p=0.95,
-            num_speakers=1
-        )
+        # Generate speech with error handling
+        try:
+            audio_array, sample_rate = core.generate_speech(
+                text=request.input,
+                voice_samples=None,
+                cfg_scale=1.3,
+                seed=seed,
+                diffusion_steps=20 if "hd" in request.model or "large" in request.model else 10,
+                use_sampling=False,
+                temperature=0.95,
+                top_p=0.95,
+                num_speakers=1
+            )
+        except Exception as gen_error:
+            logger.error(f"Speech generation failed: {gen_error}")
+            # Free memory on error
+            try:
+                core.free_memory()
+            except:
+                pass
+            raise HTTPException(status_code=500, detail=f"Speech generation failed: {str(gen_error)}")
         
         # Free memory after generation
-        core.free_memory()
+        try:
+            core.free_memory()
+        except Exception as mem_error:
+            logger.warning(f"Memory cleanup warning: {mem_error}")
         
         # Convert audio to requested format
         buffer = io.BytesIO()
         
-        if request.response_format == "wav":
-            sf.write(buffer, audio_array, sample_rate, format='WAV')
-            media_type = "audio/wav"
-        elif request.response_format == "flac":
-            sf.write(buffer, audio_array, sample_rate, format='FLAC')
-            media_type = "audio/flac"
-        elif request.response_format == "pcm":
-            # Raw PCM data
-            buffer = io.BytesIO(audio_array.tobytes())
-            media_type = "audio/pcm"
-        else:
-            # For mp3, opus, aac - convert via WAV first
-            # Note: This requires additional libraries like pydub/ffmpeg
-            # For now, default to WAV
-            sf.write(buffer, audio_array, sample_rate, format='WAV')
-            media_type = "audio/wav"
-            logger.warning(f"Format {request.response_format} not fully supported, returning WAV")
+        try:
+            if request.response_format == "wav":
+                sf.write(buffer, audio_array, sample_rate, format='WAV')
+                media_type = "audio/wav"
+            elif request.response_format == "flac":
+                sf.write(buffer, audio_array, sample_rate, format='FLAC')
+                media_type = "audio/flac"
+            elif request.response_format == "pcm":
+                # Raw PCM data
+                buffer = io.BytesIO(audio_array.tobytes())
+                media_type = "audio/pcm"
+            else:
+                # For mp3, opus, aac - default to WAV for Open WebUI compatibility
+                sf.write(buffer, audio_array, sample_rate, format='WAV')
+                media_type = "audio/wav"
+                logger.info(f"Format {request.response_format} converted to WAV for compatibility")
+        except Exception as format_error:
+            logger.error(f"Audio format conversion failed: {format_error}")
+            raise HTTPException(status_code=500, detail=f"Audio format conversion failed: {str(format_error)}")
         
         buffer.seek(0)
+        
+        logger.info(f"TTS generation successful - Size: {len(buffer.getvalue())} bytes")
         
         return StreamingResponse(
             buffer,
             media_type=media_type,
             headers={
-                "Content-Disposition": f"attachment; filename=speech.{request.response_format}",
+                "Content-Disposition": f"inline; filename=speech.{request.response_format}",
                 "X-Model": model_name,
                 "X-Voice": request.voice,
-                "X-Sample-Rate": str(sample_rate)
+                "X-Sample-Rate": str(sample_rate),
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Expose-Headers": "*"
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"OpenAI TTS generation failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Unexpected OpenAI TTS error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/v1/models")
 async def openai_list_models():

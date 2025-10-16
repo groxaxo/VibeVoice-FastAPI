@@ -4,6 +4,8 @@ Complete standalone implementation of Microsoft VibeVoice text-to-speech with Gr
 
 **🔥 NEW: OpenAI API Compatible!** Drop-in replacement for OpenAI's TTS API - use with the official Python SDK!
 
+**✨ Open WebUI Compatible!** Works seamlessly as TTS provider for Open WebUI - see [OPEN_WEBUI_SETUP.md](OPEN_WEBUI_SETUP.md)
+
 ## 🚀 Quick Start
 
 ### 1. Setup Environment
