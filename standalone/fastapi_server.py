@@ -47,7 +47,7 @@ class TTSRequest(BaseModel):
     model_name: str
     attention_type: str = "auto"
     quantize_llm: str = "full precision"
-    diffusion_steps: int = 5  # Reduced for faster API response
+    diffusion_steps: int = 10  # Default steps for good quality/speed balance
     seed: int = 42
     cfg_scale: float = 1.3
     use_sampling: bool = False
@@ -61,7 +61,7 @@ class MultiSpeakerTTSRequest(BaseModel):
     model_name: str
     attention_type: str = "auto"
     quantize_llm: str = "full precision"
-    diffusion_steps: int = 5  # Reduced for faster API response
+    diffusion_steps: int = 10  # Default steps for good quality/speed balance
     seed: int = 42
     cfg_scale: float = 1.3
     use_sampling: bool = False
@@ -373,7 +373,7 @@ async def openai_tts(request: OpenAITTSRequest):
                 voice_samples=None,
                 cfg_scale=1.3,
                 seed=seed,
-                diffusion_steps=20 if "hd" in request.model or "large" in request.model else 10,
+                diffusion_steps=10,  # Consistent 10 steps for all models
                 use_sampling=False,
                 temperature=0.95,
                 top_p=0.95,

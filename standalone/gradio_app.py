@@ -203,7 +203,7 @@ with gr.Blocks(title="VibeVoice TTS", theme=gr.themes.Soft()) as demo:
                         ss_attention = gr.Dropdown(
                             label="Attention Type",
                             choices=["auto", "eager", "sdpa", "flash_attention_2"],
-                            value="auto"
+                            value="flash_attention_2"
                         )
                     
                     with gr.Row():
@@ -299,7 +299,7 @@ with gr.Blocks(title="VibeVoice TTS", theme=gr.themes.Soft()) as demo:
                         ms_attention = gr.Dropdown(
                             label="Attention Type",
                             choices=["auto", "eager", "sdpa", "flash_attention_2"],
-                            value="auto"
+                            value="flash_attention_2"
                         )
                     
                     with gr.Row():

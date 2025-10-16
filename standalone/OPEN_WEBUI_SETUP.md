@@ -145,21 +145,24 @@ response.stream_to_file("output.wav")
 
 ### Fast Generation (tts-1)
 - Uses VibeVoice-1.5B
-- ~10 diffusion steps
+- 10 diffusion steps
 - ~3-5 seconds per sentence
 - ~6GB VRAM
 
 ### High Quality (tts-1-hd)
 - Uses VibeVoice-Large
-- ~20 diffusion steps
-- ~8-12 seconds per sentence
+- 10 diffusion steps (same speed, better quality model)
+- ~5-8 seconds per sentence
 - ~20GB VRAM
 
 ### Adjust Speed (if needed)
-Modify `fastapi_server.py`:
+Default is 10 steps for all models (good balance).
+To customize, modify `fastapi_server.py`:
 ```python
-diffusion_steps=5  # Faster but lower quality
-diffusion_steps=40  # Slower but higher quality
+diffusion_steps=5   # Faster but lower quality
+diffusion_steps=10  # Default - good balance
+diffusion_steps=20  # Higher quality
+diffusion_steps=40  # Maximum quality but slower
 ```
 
 ## Server Info

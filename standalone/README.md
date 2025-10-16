@@ -117,7 +117,7 @@ curl -X POST "http://localhost:8000/tts/single" \
   -d '{
     "text": "Hello, this is VibeVoice!",
     "model_name": "VibeVoice-Large",
-    "diffusion_steps": 20,
+    "diffusion_steps": 10,
     "seed": 42
   }' --output output.wav
 ```
@@ -132,7 +132,7 @@ response = requests.post(
     json={
         "text": "Welcome to VibeVoice TTS!",
         "model_name": "VibeVoice-Large",
-        "diffusion_steps": 20,
+        "diffusion_steps": 10,
         "cfg_scale": 1.3,
         "seed": 42
     }
@@ -147,7 +147,7 @@ response = requests.post(
     json={
         "text": "[1]: Hello! [2]: Hi there!",
         "model_name": "VibeVoice-Large",
-        "diffusion_steps": 20
+        "diffusion_steps": 10
     }
 )
 
@@ -162,7 +162,7 @@ with open("reference_voice.wav", "rb") as voice:
     data = {
         "text": "This uses my cloned voice.",
         "model_name": "VibeVoice-Large",
-        "diffusion_steps": 20
+        "diffusion_steps": 10
     }
     
     response = requests.post(
@@ -279,13 +279,13 @@ export VIBEVOICE_MODELS_DIR=/path/to/models
 
 ### Quality vs Speed
 ```python
-# Fast (3-5s per sentence)
+# Default - Good balance (5-8s per sentence)
 diffusion_steps=10
 
-# Balanced (5-8s)
+# Higher Quality (8-12s)
 diffusion_steps=20
 
-# High Quality (8-12s)
+# Maximum Quality (12-15s)
 diffusion_steps=40
 ```
 
@@ -335,8 +335,8 @@ model_name="VibeVoice-1.5B"
 # Or enable quantization
 quantize_llm="4bit"
 
-# Or reduce steps
-diffusion_steps=10
+# Or reduce steps (faster but lower quality)
+diffusion_steps=5
 ```
 
 ### Port already in use
