@@ -1,0 +1,64 @@
+# Docker-specific environment configuration
+# Copy this to .env for docker-compose
+
+# ============================================================
+# Model Configuration
+# ============================================================
+
+# Path to VibeVoice model (inside container or HuggingFace ID)
+VIBEVOICE_MODEL_PATH=microsoft/VibeVoice-1.5B
+
+# Device for inference
+VIBEVOICE_DEVICE=cuda
+
+# Number of diffusion inference steps
+VIBEVOICE_INFERENCE_STEPS=10
+
+# ============================================================
+# Voice Configuration
+# ============================================================
+
+# Directory containing voice preset audio files (inside container)
+VOICES_DIR=/app/voices
+
+# ============================================================
+# API Server Configuration
+# ============================================================
+
+API_HOST=0.0.0.0
+API_PORT=8000
+API_WORKERS=1
+API_CORS_ORIGINS=*
+
+# ============================================================
+# Generation Defaults
+# ============================================================
+
+DEFAULT_CFG_SCALE=1.3
+DEFAULT_RESPONSE_FORMAT=mp3
+MAX_GENERATION_LENGTH=5400
+DEFAULT_DO_SAMPLE=False
+DEFAULT_TEMPERATURE=1.0
+DEFAULT_TOP_P=1.0
+DEFAULT_TOP_K=50
+DEFAULT_REPETITION_PENALTY=1.0
+
+# ============================================================
+# Logging
+# ============================================================
+
+LOG_LEVEL=INFO
+
+# ============================================================
+# Docker-specific: Host paths for volume mounts
+# ============================================================
+
+# Path to voices directory on host (will be mounted to /app/voices)
+# VOICES_DIR=/home/user/my-voices
+
+# Path to HuggingFace cache on host (optional, for faster model loading)
+# HF_CACHE_DIR=/home/user/.cache/huggingface
+
+# Path to models directory on host (optional)
+# MODELS_DIR=/home/user/vibevoice-models
+

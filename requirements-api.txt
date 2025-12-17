@@ -1,0 +1,24 @@
+# VibeVoice API Server Dependencies
+# Install after setting up PyTorch and VibeVoice core
+
+# FastAPI and server
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+
+# Configuration
+python-dotenv>=1.0.0
+pydantic-settings>=2.0.0
+
+# Audio processing
+pydub>=0.25.1
+soundfile>=0.12.1
+
+# Async and streaming
+aiofiles>=23.2.1
+sse-starlette>=1.8.0
+
+# HTTP client (for testing)
+httpx>=0.26.0
+
+

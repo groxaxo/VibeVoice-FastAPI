@@ -1,0 +1,173 @@
+#!/bin/bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+echo "============================================================"
+echo "VibeVoice API Setup Script"
+echo "============================================================"
+echo ""
+
+# ============================================================
+# Python Version Check
+# flash-attn requires Python 3.8-3.11 (3.10 or 3.11 recommended)
+# ============================================================
+REQUIRED_PYTHON_MAJOR=3
+REQUIRED_PYTHON_MINOR_MIN=10
+REQUIRED_PYTHON_MINOR_MAX=11
+
+echo "Checking for compatible Python version..."
+
+# Find suitable Python version
+PYTHON_CMD=""
+for version in python3.11 python3.10 python3; do
+    if command -v $version &> /dev/null; then
+        PY_VERSION=$($version -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+        PY_MAJOR=$(echo $PY_VERSION | cut -d. -f1)
+        PY_MINOR=$(echo $PY_VERSION | cut -d. -f2)
+        
+        if [ "$PY_MAJOR" -eq "$REQUIRED_PYTHON_MAJOR" ] && \
+           [ "$PY_MINOR" -ge "$REQUIRED_PYTHON_MINOR_MIN" ] && \
+           [ "$PY_MINOR" -le "$REQUIRED_PYTHON_MINOR_MAX" ]; then
+            PYTHON_CMD=$version
+            echo "✓ Found compatible Python: $PYTHON_CMD (version $PY_VERSION)"
+            break
+        fi
+    fi
+done
+
+if [ -z "$PYTHON_CMD" ]; then
+    echo "❌ ERROR: Python 3.10 or 3.11 is required for flash-attn compatibility."
+    echo ""
+    echo "Please install Python 3.10 or 3.11:"
+    echo "  Ubuntu/Debian: sudo apt install python3.11 python3.11-venv"
+    echo "  macOS: brew install python@3.11"
+    echo ""
+    exit 1
+fi
+
+# ============================================================
+# Create Python Virtual Environment
+# ============================================================
+echo ""
+echo "Creating virtual environment with $PYTHON_CMD..."
+$PYTHON_CMD -m venv venv
+source venv/bin/activate
+
+# ============================================================
+# Upgrade pip and install build tools
+# ============================================================
+echo ""
+echo "Upgrading pip and installing build tools..."
+pip install --upgrade pip wheel setuptools
+
+# ============================================================
+# Detect CUDA and install PyTorch
+# ============================================================
+echo ""
+echo "Detecting CUDA and installing PyTorch..."
+
+if command -v nvidia-smi &> /dev/null; then
+    CUDA_VERSION=$(nvidia-smi | grep -oP 'CUDA Version: \K[0-9]+\.[0-9]+' | head -1)
+    CUDA_MAJOR=$(echo $CUDA_VERSION | cut -d. -f1)
+    echo "✓ Detected CUDA $CUDA_VERSION"
+    
+    # Select appropriate PyTorch CUDA version
+    if [ "$CUDA_MAJOR" -ge "12" ]; then
+        TORCH_INDEX="cu121"
+    elif [ "$CUDA_MAJOR" -ge "11" ]; then
+        TORCH_INDEX="cu118"
+    else:
+        echo "⚠️  WARNING: CUDA $CUDA_VERSION may not be fully supported"
+        TORCH_INDEX="cu118"
+    fi
+    
+    echo "Installing PyTorch with CUDA support ($TORCH_INDEX)..."
+    pip install torch torchaudio --index-url https://download.pytorch.org/whl/$TORCH_INDEX
+    
+    # Install flash-attn (requires CUDA and compatible Python)
+    echo ""
+    echo "Installing flash-attn (this may take several minutes)..."
+    echo "Note: This is optional but recommended for better performance"
+    pip install flash-attn --no-build-isolation || {
+        echo "⚠️  WARNING: flash-attn installation failed. Will use SDPA fallback."
+        echo "You can try installing manually later with:"
+        echo "  source venv/bin/activate"
+        echo "  pip install flash-attn --no-build-isolation"
+    }
+else
+    echo "ℹ️  No CUDA detected, installing CPU-only PyTorch"
+    pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+    echo "Note: flash-attn requires CUDA and will not be installed."
+fi
+
+# ============================================================
+# Install VibeVoice package in editable mode
+# ============================================================
+echo ""
+echo "Installing VibeVoice package..."
+pip install -e .
+
+# ============================================================
+# Install API dependencies
+# ============================================================
+echo ""
+echo "Installing API dependencies..."
+pip install -r requirements-api.txt
+
+# ============================================================
+# Check for ffmpeg (system dependency)
+# ============================================================
+echo ""
+echo "Checking for ffmpeg..."
+if ! command -v ffmpeg &> /dev/null; then
+    echo "⚠️  WARNING: ffmpeg not found. Required for audio format conversion."
+    echo ""
+    echo "Install with:"
+    echo "  Ubuntu/Debian: sudo apt install ffmpeg"
+    echo "  macOS: brew install ffmpeg"
+    echo ""
+else
+    echo "✓ ffmpeg is installed"
+fi
+
+# ============================================================
+# Create .env file if it doesn't exist
+# ============================================================
+echo ""
+if [ ! -f .env ]; then
+    if [ -f env.example ]; then
+        cp env.example .env
+        echo "✓ Created .env file from env.example"
+    else
+        echo "# VibeVoice API Configuration" > .env
+        echo "VIBEVOICE_MODEL_PATH=microsoft/VibeVoice-1.5B" >> .env
+        echo "VIBEVOICE_DEVICE=cuda" >> .env
+        echo "✓ Created basic .env file"
+    fi
+    echo "Please review and edit .env file as needed"
+else
+    echo "ℹ️  .env file already exists, skipping creation"
+fi
+
+# ============================================================
+# Setup Complete
+# ============================================================
+echo ""
+echo "============================================================"
+echo "✅ Setup complete!"
+echo "============================================================"
+echo ""
+echo "Next steps:"
+echo "  1. Review and edit .env file if needed"
+echo "  2. Start the API server:"
+echo "     ./start.sh"
+echo ""
+echo "Or manually:"
+echo "  source venv/bin/activate"
+echo "  uvicorn api.main:app --host 0.0.0.0 --port 8000"
+echo ""
+echo "The model will be downloaded automatically on first run."
+echo "============================================================"
+

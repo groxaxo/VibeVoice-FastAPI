@@ -1,0 +1,157 @@
+"""Configuration management for VibeVoice API."""
+
+import os
+from typing import Optional
+from pydantic_settings import BaseSettings
+from pydantic import Field
+
+
+class Settings(BaseSettings):
+    """Application settings loaded from environment variables."""
+    
+    # Model Configuration
+    vibevoice_model_path: str = Field(
+        default="microsoft/VibeVoice-1.5B",
+        description="Path to VibeVoice model weights (local path or HuggingFace model ID)"
+    )
+    vibevoice_device: str = Field(
+        default="cuda",
+        description="Device for inference: cuda, cpu, or mps"
+    )
+    vibevoice_inference_steps: int = Field(
+        default=10,
+        description="Number of diffusion inference steps"
+    )
+    vibevoice_dtype: Optional[str] = Field(
+        default=None,
+        description="Model dtype: bfloat16, float16, or float32 (auto-detected if None)"
+    )
+    vibevoice_attn_implementation: Optional[str] = Field(
+        default=None,
+        description="Attention implementation: flash_attention_2, sdpa, or eager (auto-detected if None)"
+    )
+    
+    # Voice Configuration
+    voices_dir: str = Field(
+        default="demo/voices",
+        description="Directory containing voice preset audio files"
+    )
+    
+    # API Server Configuration
+    api_host: str = Field(
+        default="0.0.0.0",
+        description="API server host"
+    )
+    api_port: int = Field(
+        default=8000,
+        description="API server port"
+    )
+    api_workers: int = Field(
+        default=1,
+        description="Number of API workers (keep at 1 for model loading)"
+    )
+    api_cors_origins: str = Field(
+        default="*",
+        description="CORS allowed origins (comma-separated)"
+    )
+    
+    # Generation Defaults
+    default_cfg_scale: float = Field(
+        default=1.3,
+        description="Default CFG scale for generation (1.0-3.0, higher = more faithful to prompt)"
+    )
+    default_response_format: str = Field(
+        default="mp3",
+        description="Default audio response format"
+    )
+    max_generation_length: int = Field(
+        default=90 * 60,  # 90 minutes in seconds
+        description="Maximum generation length in seconds"
+    )
+    default_do_sample: bool = Field(
+        default=False,
+        description="Whether to use sampling for text generation (False = greedy decoding)"
+    )
+    default_temperature: float = Field(
+        default=1.0,
+        description="Temperature for sampling (only used if do_sample=True)"
+    )
+    default_top_p: float = Field(
+        default=1.0,
+        description="Top-p (nucleus) sampling (only used if do_sample=True)"
+    )
+    default_top_k: int = Field(
+        default=50,
+        description="Top-k sampling (only used if do_sample=True)"
+    )
+    default_repetition_penalty: float = Field(
+        default=1.0,
+        description="Repetition penalty (1.0 = no penalty)"
+    )
+    
+    # Logging
+    log_level: str = Field(
+        default="INFO",
+        description="Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL"
+    )
+    
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        case_sensitive = False
+        
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """Parse CORS origins from comma-separated string."""
+        if self.api_cors_origins == "*":
+            return ["*"]
+        return [origin.strip() for origin in self.api_cors_origins.split(",")]
+    
+    def get_device(self) -> str:
+        """Get the appropriate device, checking availability."""
+        import torch
+        
+        if self.vibevoice_device == "cuda" and not torch.cuda.is_available():
+            print("WARNING: CUDA requested but not available, falling back to CPU")
+            return "cpu"
+        elif self.vibevoice_device == "mps" and not torch.backends.mps.is_available():
+            print("WARNING: MPS requested but not available, falling back to CPU")
+            return "cpu"
+        return self.vibevoice_device
+    
+    def get_dtype(self):
+        """Get the appropriate dtype for the device."""
+        import torch
+        
+        if self.vibevoice_dtype:
+            return getattr(torch, self.vibevoice_dtype)
+        
+        device = self.get_device()
+        if device == "cuda":
+            return torch.bfloat16
+        elif device == "mps":
+            return torch.float32
+        else:
+            return torch.float32
+    
+    def get_attn_implementation(self) -> str:
+        """Get the appropriate attention implementation."""
+        if self.vibevoice_attn_implementation:
+            return self.vibevoice_attn_implementation
+        
+        device = self.get_device()
+        if device == "cuda":
+            # Try flash_attention_2 first, fallback to sdpa
+            try:
+                import flash_attn
+                return "flash_attention_2"
+            except ImportError:
+                return "sdpa"
+        else:
+            return "sdpa"
+
+
+# Global settings instance
+settings = Settings()
+
+

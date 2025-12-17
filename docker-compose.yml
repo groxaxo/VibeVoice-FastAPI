@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  vibevoice-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vibevoice-api:latest
+    container_name: vibevoice-api
+    
+    # GPU support
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    
+    # Port mapping
+    ports:
+      - "${API_PORT:-8000}:8000"
+    
+    # Environment variables from .env file
+    env_file:
+      - .env
+    
+    # Volume mounts
+    volumes:
+      # Mount voices directory
+      - ${VOICES_DIR:-./demo/voices}:/app/voices:ro
+      # Mount HuggingFace cache (optional, for faster model loading)
+      - ${HF_CACHE_DIR:-~/.cache/huggingface}:/root/.cache/huggingface:rw
+      # Mount models directory (optional)
+      - ${MODELS_DIR:-./models}:/app/models:rw
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
