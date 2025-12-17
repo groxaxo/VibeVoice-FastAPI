@@ -43,7 +43,7 @@ class Settings(BaseSettings):
         description="API server host"
     )
     api_port: int = Field(
-        default=8000,
+        default=8001,
         description="API server port"
     )
     api_workers: int = Field(

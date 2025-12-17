@@ -27,7 +27,7 @@ docker-compose down
 # Build image
 docker build -t vibevoice-api:latest .
 
-# Run container
+# Run container (using all GPUs)
 docker run -d \
   --name vibevoice-api \
   --gpus all \
@@ -38,6 +38,12 @@ docker run -d \
   -e VIBEVOICE_DEVICE=cuda \
   -e VOICES_DIR=/app/voices \
   vibevoice-api:latest
+
+# Or specify GPU 0 only
+# docker run -d \
+#   --name vibevoice-api \
+#   --gpus '"device=0"' \
+#   ...
 
 # View logs
 docker logs -f vibevoice-api
@@ -110,6 +116,64 @@ sudo systemctl restart docker
 Test GPU access:
 ```bash
 docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi
+```
+
+### Specifying Which GPU to Use
+
+**Option 1: Using docker-compose.yml**
+
+Edit `docker-compose.yml` and modify the GPU configuration:
+
+```yaml
+# Use specific GPU (e.g., GPU 0)
+deploy:
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          device_ids: ['0']  # Use GPU 0 only
+          capabilities: [gpu]
+
+# Or use multiple GPUs
+# device_ids: ['0', '1']  # Use GPUs 0 and 1
+
+# Or use all GPUs (default)
+# count: all
+```
+
+**Option 2: Using docker run**
+
+```bash
+# Use GPU 0 only
+docker run --gpus '"device=0"' ...
+
+# Use GPUs 0 and 1
+docker run --gpus '"device=0,1"' ...
+
+# Use all GPUs
+docker run --gpus all ...
+```
+
+**Option 3: Using CUDA_VISIBLE_DEVICES**
+
+You can also control GPU visibility inside the container:
+
+```bash
+# In .env file
+CUDA_VISIBLE_DEVICES=0  # Only GPU 0 visible to container
+
+# Or in docker-compose.yml
+environment:
+  - CUDA_VISIBLE_DEVICES=0
+```
+
+**Check available GPUs:**
+```bash
+# List all GPUs
+nvidia-smi
+
+# Test GPU access in container
+docker exec vibevoice-api nvidia-smi
 ```
 
 ## Using Local Models

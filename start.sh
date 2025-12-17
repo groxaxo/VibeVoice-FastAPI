@@ -20,7 +20,7 @@ fi
 
 # Default values
 HOST=${API_HOST:-0.0.0.0}
-PORT=${API_PORT:-8000}
+PORT=${API_PORT:-8001}
 WORKERS=${API_WORKERS:-1}
 LOG_LEVEL=${LOG_LEVEL:-info}
 
