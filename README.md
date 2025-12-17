@@ -63,12 +63,8 @@ The API will be available at `http://localhost:8000`
 
 ## 📖 Documentation
 
-- **[API README](API_README.md)** - Complete API documentation with examples
-- **[Quick Start Guide](QUICKSTART.md)** - Get up and running in 5 minutes
+- **[API README](API_README.md)** - Complete API documentation with examples, voice management, and troubleshooting
 - **[Docker Guide](DOCKER_GUIDE.md)** - Docker deployment instructions
-- **[Voice Usage Guide](VOICE_USAGE_GUIDE.md)** - How to use and manage voices
-- **[Custom Voices Guide](CUSTOM_VOICES_GUIDE.md)** - Adding your own voices
-- **[Models Guide](MODELS_GUIDE.md)** - Available VibeVoice models
 
 ## 🎯 API Endpoints
 

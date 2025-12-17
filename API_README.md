@@ -1,106 +1,36 @@
-# VibeVoice OpenAI-Compatible TTS API
+# VibeVoice FastAPI Documentation
 
-A production-ready REST API for VibeVoice text-to-speech that provides both OpenAI-compatible endpoints and extended VibeVoice-specific features.
+Complete documentation for the VibeVoice FastAPI server with OpenAI-compatible endpoints.
 
-## Features
+## Table of Contents
 
-- ✅ **OpenAI-Compatible API** - Drop-in replacement for OpenAI's TTS API
-- ✅ **Unlimited Custom Voices** - Automatically loads all audio files from voices folder
-- ✅ **Multi-Speaker Support** - Generate dialogues with up to 4 distinct speakers
-- ✅ **Streaming Audio** - Real-time audio generation with chunked streaming
-- ✅ **Multiple Audio Formats** - Support for MP3, WAV, FLAC, Opus, AAC, and PCM
-- ✅ **9 Built-in Voices** - English, Chinese, and Indian English presets included
-- ✅ **CFG Scale Control** - Fine-tune generation quality and adherence
-- ✅ **Auto Device Detection** - Automatically uses CUDA, MPS, or CPU
+- [Quick Start](#quick-start)
+- [API Endpoints](#api-endpoints)
+- [Voice Management](#voice-management)
+- [Models](#models)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
 
 ## Quick Start
 
-### 1. Installation
+### Installation
 
 ```bash
-# Clone the repository (if not already done)
-git clone https://github.com/shijincai/VibeVoice.git
-cd VibeVoice
-
-# Run the setup script (installs dependencies, PyTorch, flash-attn)
+# Run setup script
 ./setup.sh
-```
 
-The setup script will:
-- Detect and validate Python 3.10 or 3.11
-- Create a virtual environment
-- Install PyTorch with appropriate CUDA support
-- Install flash-attn (optional, for better performance)
-- Install VibeVoice and API dependencies
-- Create a `.env` configuration file
+# Configure (optional)
+cp env.example .env
+# Edit .env as needed
 
-### 2. Configuration
-
-Edit the `.env` file to configure the API:
-
-```bash
-# Model configuration
-VIBEVOICE_MODEL_PATH=microsoft/VibeVoice-1.5B  # or microsoft/VibeVoice-Large
-VIBEVOICE_DEVICE=cuda  # cuda, cpu, or mps
-VIBEVOICE_INFERENCE_STEPS=10  # 5-50, higher = better quality
-
-# Voice configuration
-VOICES_DIR=demo/voices  # Directory containing voice preset audio files
-
-# Server configuration
-API_HOST=0.0.0.0
-API_PORT=8000
-```
-
-**Adding Custom Voices:**
-Simply drop audio files (WAV, MP3, FLAC, etc.) into the `VOICES_DIR` folder and restart the server. The API will automatically discover and load them as voice presets. See [CUSTOM_VOICES_GUIDE.md](CUSTOM_VOICES_GUIDE.md) for details.
-
-### 3. Start the Server
-
-```bash
+# Start server
 ./start.sh
 ```
 
-The API will be available at:
-- **API**: http://localhost:8000
-- **Interactive Docs**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+The API will be available at `http://localhost:8000`
 
-## API Endpoints
+### First API Call
 
-### OpenAI-Compatible Endpoints
-
-#### POST `/v1/audio/speech`
-
-Generate speech from text using OpenAI-compatible API.
-
-**Request:**
-```json
-{
-  "model": "tts-1",
-  "input": "Hello, this is a test of the VibeVoice API.",
-  "voice": "alloy",
-  "response_format": "mp3",
-  "speed": 1.0
-}
-```
-
-**Supported Voices:**
-- `alloy` → en-Alice_woman (English, Female)
-- `echo` → en-Carter_man (English, Male)
-- `fable` → en-Maya_woman (English, Female)
-- `onyx` → en-Frank_man (English, Male)
-- `nova` → en-Mary_woman_bgm (English, Female with BGM)
-- `shimmer` → zh-Xinran_woman (Chinese, Female)
-
-**Plus 3 additional voices** (use preset names directly):
-- `in-Samuel_man` (Indian English, Male)
-- `zh-Anchen_man_bgm` (Chinese, Male with BGM)
-- `zh-Bowen_man` (Chinese, Male)
-
-📖 See [VOICE_USAGE_GUIDE.md](VOICE_USAGE_GUIDE.md) for complete voice documentation.
-
-**Example (curl):**
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
@@ -113,7 +43,246 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output speech.mp3
 ```
 
-**Example (Python):**
+## API Endpoints
+
+### OpenAI-Compatible Endpoints
+
+#### POST `/v1/audio/speech`
+
+Generate speech from text (OpenAI-compatible).
+
+**Request:**
+```json
+{
+  "model": "tts-1",
+  "input": "Your text here",
+  "voice": "alloy",
+  "response_format": "mp3",
+  "speed": 1.0
+}
+```
+
+**Response:** Audio file in requested format
+
+**Example:**
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"tts-1","input":"Hello!","voice":"alloy","response_format":"mp3"}' \
+  --output speech.mp3
+```
+
+#### GET `/v1/audio/voices`
+
+List available voices.
+
+**Query Parameters:**
+- `show_all` (optional): If `true`, returns all voices including custom ones
+
+**Example:**
+```bash
+# OpenAI voices only (6 voices)
+curl http://localhost:8000/v1/audio/voices
+
+# All voices including custom
+curl 'http://localhost:8000/v1/audio/voices?show_all=true'
+```
+
+### VibeVoice Extended Endpoints
+
+#### POST `/v1/vibevoice/generate`
+
+Generate multi-speaker dialogue with advanced features.
+
+**Request:**
+```json
+{
+  "script": "Speaker 0: Welcome!\nSpeaker 1: Thanks!",
+  "speakers": [
+    {"speaker_id": 0, "voice_preset": "en-Alice_woman"},
+    {"speaker_id": 1, "voice_preset": "en-Carter_man"}
+  ],
+  "cfg_scale": 1.3,
+  "inference_steps": 10,
+  "response_format": "mp3",
+  "stream": false
+}
+```
+
+#### GET `/v1/vibevoice/voices`
+
+List all VibeVoice voice presets with detailed information.
+
+#### GET `/v1/vibevoice/health`
+
+Check service health and model status.
+
+## Voice Management
+
+### Built-in Voices
+
+**OpenAI-Compatible Voices (6):**
+- `alloy` → en-Alice_woman (English, Female)
+- `echo` → en-Carter_man (English, Male)
+- `fable` → en-Maya_woman (English, Female)
+- `onyx` → en-Frank_man (English, Male)
+- `nova` → en-Mary_woman_bgm (English, Female with BGM)
+- `shimmer` → zh-Xinran_woman (Chinese, Female)
+
+**Additional Presets (3):**
+- `in-Samuel_man` (Indian English, Male)
+- `zh-Anchen_man_bgm` (Chinese, Male with BGM)
+- `zh-Bowen_man` (Chinese, Male)
+
+### Adding Custom Voices
+
+The API **automatically discovers and loads all audio files** from your voices directory.
+
+**Steps:**
+1. Place audio files in `VOICES_DIR` (configured in `.env`)
+2. Supported formats: `.wav`, `.mp3`, `.flac`, `.ogg`, `.m4a`, `.aac`
+3. Restart the server
+4. Use the filename (without extension) as the voice name
+
+**Example:**
+```bash
+# Add a custom voice
+cp my-voice.wav demo/voices/custom-voice.wav
+
+# Restart server
+./start.sh
+
+# Use it
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "tts-1",
+    "input": "Testing custom voice",
+    "voice": "custom-voice",
+    "response_format": "mp3"
+  }' \
+  --output output.mp3
+```
+
+**Voice Sample Requirements:**
+- Duration: 3-10 seconds recommended
+- Quality: Clear speech, minimal background noise
+- Format: Any supported audio format
+- Sample rate: Automatically resampled to 24kHz
+
+### Using Voices
+
+**Method 1: OpenAI Voice Names**
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"tts-1","input":"Hello","voice":"alloy","response_format":"mp3"}'
+```
+
+**Method 2: Direct Preset Names**
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"tts-1","input":"Hello","voice":"in-Samuel_man","response_format":"mp3"}'
+```
+
+**Method 3: Custom Voice Names**
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"tts-1","input":"Hello","voice":"my-custom-voice","response_format":"mp3"}'
+```
+
+## Models
+
+### Available Models
+
+| Model | Size | Context | Max Length | VRAM Required |
+|-------|------|---------|------------|---------------|
+| VibeVoice-1.5B | 1.5B | 64K | ~90 min | 8GB+ |
+| VibeVoice-Large | 7B | 32K | ~45 min | 16GB+ |
+
+### Switching Models
+
+Edit `.env`:
+```bash
+# Use HuggingFace model ID (downloads automatically)
+VIBEVOICE_MODEL_PATH=microsoft/VibeVoice-1.5B
+
+# Or use local cache path (faster loading)
+VIBEVOICE_MODEL_PATH=~/.cache/huggingface/hub/models--microsoft--VibeVoice-1.5B/snapshots/...
+
+# Or custom local path
+VIBEVOICE_MODEL_PATH=/path/to/your/model
+```
+
+Then restart the server.
+
+## Configuration
+
+### Environment Variables
+
+Key settings in `.env`:
+
+```bash
+# Model Configuration
+VIBEVOICE_MODEL_PATH=microsoft/VibeVoice-1.5B
+VIBEVOICE_DEVICE=cuda  # cuda, cpu, or mps
+VIBEVOICE_INFERENCE_STEPS=10  # 5-50, higher = better quality
+
+# Voice Configuration
+VOICES_DIR=demo/voices  # Directory with voice files
+
+# API Server
+API_HOST=0.0.0.0
+API_PORT=8000
+API_CORS_ORIGINS=*
+
+# Generation Defaults
+DEFAULT_CFG_SCALE=1.3  # 1.0-3.0
+DEFAULT_RESPONSE_FORMAT=mp3
+DEFAULT_DO_SAMPLE=False
+DEFAULT_TEMPERATURE=1.0
+DEFAULT_TOP_P=1.0
+DEFAULT_TOP_K=50
+DEFAULT_REPETITION_PENALTY=1.0
+```
+
+### Audio Formats
+
+Supported output formats:
+- **mp3** - MPEG Audio Layer III (default)
+- **opus** - Opus codec (efficient for streaming)
+- **aac** - Advanced Audio Coding
+- **flac** - Free Lossless Audio Codec
+- **wav** - Waveform Audio File Format
+- **pcm** - Raw PCM audio data
+- **m4a** - MPEG-4 Audio
+
+## Python SDK
+
+### Using OpenAI Client
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="not-needed"  # Not required for local server
+)
+
+# Generate speech
+response = client.audio.speech.create(
+    model="tts-1",
+    voice="alloy",  # or any custom voice name
+    input="Hello from VibeVoice!"
+)
+
+response.stream_to_file("speech.mp3")
+```
+
+### Using Requests
+
 ```python
 import requests
 
@@ -131,147 +300,65 @@ with open("speech.mp3", "wb") as f:
     f.write(response.content)
 ```
 
-#### GET `/v1/audio/voices`
-
-List available OpenAI-compatible voices.
-
-### VibeVoice Extended Endpoints
-
-#### POST `/v1/vibevoice/generate`
-
-Generate multi-speaker dialogue with advanced features.
-
-**Request:**
-```json
-{
-  "script": "Speaker 0: Welcome to our podcast!\nSpeaker 1: Thanks for having me!",
-  "speakers": [
-    {
-      "speaker_id": 0,
-      "voice_preset": "en-Alice_woman"
-    },
-    {
-      "speaker_id": 1,
-      "voice_preset": "en-Carter_man"
-    }
-  ],
-  "cfg_scale": 1.3,
-  "inference_steps": 10,
-  "response_format": "mp3",
-  "stream": false
-}
-```
-
-**Example (Python with streaming):**
-```python
-import requests
-import json
-
-response = requests.post(
-    "http://localhost:8000/v1/vibevoice/generate",
-    json={
-        "script": "Speaker 0: Hello!\nSpeaker 1: Hi there!",
-        "speakers": [
-            {"speaker_id": 0, "voice_preset": "en-Alice_woman"},
-            {"speaker_id": 1, "voice_preset": "en-Carter_man"}
-        ],
-        "stream": True
-    },
-    stream=True
-)
-
-# Process Server-Sent Events
-for line in response.iter_lines():
-    if line:
-        line = line.decode('utf-8')
-        if line.startswith('data: '):
-            data = json.loads(line[6:])
-            if 'done' in data:
-                print("Generation complete!")
-                break
-            elif 'audio' in data:
-                # Process audio chunk (base64 encoded)
-                print(f"Received chunk {data['chunk_id']}")
-```
-
-#### GET `/v1/vibevoice/voices`
-
-List all available VibeVoice voice presets.
-
-#### GET `/v1/vibevoice/health`
-
-Check service health and model status.
-
-## Audio Formats
-
-Supported output formats:
-- **mp3** - MPEG Audio Layer III (default)
-- **opus** - Opus codec (efficient for streaming)
-- **aac** - Advanced Audio Coding
-- **flac** - Free Lossless Audio Codec
-- **wav** - Waveform Audio File Format
-- **pcm** - Raw PCM audio data
-
-## Voice Presets
-
-Place voice sample files (WAV, MP3, FLAC, etc.) in the `demo/voices/` directory. The API will automatically detect and load them.
-
-Voice file naming convention:
-- `en-Name_gender.wav` - English voices
-- `zh-Name_gender.wav` - Chinese voices
-- `in-Name_gender.wav` - Indian English voices
-
-## Performance Tips
-
-1. **Use CUDA with flash-attn** for best performance:
-   ```bash
-   pip install flash-attn --no-build-isolation
-   ```
-
-2. **Adjust inference steps** based on quality/speed tradeoff:
-   - 5 steps: Fast, lower quality
-   - 10 steps: Balanced (default)
-   - 20+ steps: High quality, slower
-
-3. **Use streaming** for real-time applications:
-   ```json
-   {"stream": true}
-   ```
-
-4. **Keep workers=1** when using GPU (model loading limitation)
-
 ## Troubleshooting
 
-### Model Download Issues
+### Voice Not Found
 
-If the model fails to download automatically:
-```bash
-# Download manually using huggingface-cli
-pip install huggingface-hub
-huggingface-cli download microsoft/VibeVoice-1.5B
-```
+1. List all voices to see what's available:
+   ```bash
+   curl 'http://localhost:8000/v1/audio/voices?show_all=true'
+   ```
+
+2. Check voices directory:
+   ```bash
+   ls -la demo/voices/
+   ```
+
+3. Restart server to reload voices:
+   ```bash
+   ./start.sh
+   ```
+
+### Model Not Loading
+
+1. Check model path in `.env`:
+   ```bash
+   cat .env | grep VIBEVOICE_MODEL_PATH
+   ```
+
+2. Verify model exists:
+   ```bash
+   ls -la ~/.cache/huggingface/hub/ | grep VibeVoice
+   ```
+
+3. Check server logs for "Model loaded successfully!" message
 
 ### CUDA Out of Memory
 
-Try the 1.5B model instead of 7B:
-```bash
-VIBEVOICE_MODEL_PATH=microsoft/VibeVoice-1.5B
-```
+1. Use smaller model:
+   ```bash
+   VIBEVOICE_MODEL_PATH=microsoft/VibeVoice-1.5B
+   ```
 
-Or reduce inference steps:
-```bash
-VIBEVOICE_INFERENCE_STEPS=5
-```
+2. Reduce inference steps:
+   ```bash
+   VIBEVOICE_INFERENCE_STEPS=5
+   ```
+
+3. Use CPU (much slower):
+   ```bash
+   VIBEVOICE_DEVICE=cpu
+   ```
 
 ### Flash Attention Installation Failed
 
-The API will automatically fall back to SDPA attention. For better performance, try:
+The API automatically falls back to SDPA attention. For better performance:
 ```bash
 source venv/bin/activate
 pip install flash-attn --no-build-isolation
 ```
 
-### Audio Format Conversion Issues
+### Audio Format Issues
 
 Ensure ffmpeg is installed:
 ```bash
@@ -282,32 +369,36 @@ sudo apt install ffmpeg
 brew install ffmpeg
 ```
 
-## Development
+### Server Won't Start
 
-### Running Tests
+1. Check Python version (must be 3.10 or 3.11):
+   ```bash
+   python3 --version
+   ```
 
-```bash
-source venv/bin/activate
-pytest tests/
-```
+2. Verify dependencies:
+   ```bash
+   pip list | grep torch
+   ```
 
-### API Documentation
+3. Check GPU availability:
+   ```bash
+   nvidia-smi
+   ```
 
-Interactive API documentation is available at:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
+## Performance Tips
 
-## License
+1. **Use CUDA with flash-attn** for best performance
+2. **Adjust inference steps**: 5 (fast) to 20+ (high quality)
+3. **Use streaming** for real-time applications
+4. **Keep workers=1** when using GPU (model loading limitation)
 
-This project follows the VibeVoice license. See the main repository for details.
+## Interactive Documentation
 
-## Contributing
-
-Contributions are welcome! Please see the main VibeVoice repository for contribution guidelines.
+- **Swagger UI**: http://localhost:8000/docs
+- **ReDoc**: http://localhost:8000/redoc
 
 ## Support
 
-For issues and questions:
-- GitHub Issues: https://github.com/shijincai/VibeVoice/issues
-- Documentation: https://microsoft.github.io/VibeVoice
-
+- **GitHub Issues**: https://github.com/ncoder-ai/VibeVoice-FastAPI/issues
+- **Documentation**: See [README.md](README.md) and [DOCKER_GUIDE.md](DOCKER_GUIDE.md)

@@ -58,3 +58,4 @@ temp/
 Thumbs.db
 .DS_Store
 
+.env.backup
