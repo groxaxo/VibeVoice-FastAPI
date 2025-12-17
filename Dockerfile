@@ -4,22 +4,25 @@ FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PIP_NO_BUILD_ISOLATION=0 \
+    PIP_ONLY_BINARY=:all:
 
-# Install system dependencies
+# Install system dependencies (NO build-essential - we don't compile!)
 RUN apt-get update && apt-get install -y \
-    python3.11 \
-    python3.11-dev \
+    python3.10 \
+    python3.10-dev \
     python3-pip \
     git \
     ffmpeg \
     libsndfile1 \
-    build-essential \
+    curl \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Set Python 3.11 as default
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
-    update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+# Set Python 3.10 as default
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 && \
+    update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1
 
 # Upgrade pip
 RUN python3 -m pip install --upgrade pip setuptools wheel
@@ -31,16 +34,19 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY requirements-api.txt ./
 
-# Install PyTorch with CUDA support
-RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Install PyTorch with CUDA support (CUDA 12.1 compatible)
+RUN pip install --only-binary=:all: torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
-# Install flash-attn (optional, will skip if fails)
-RUN pip install flash-attn --no-build-isolation || echo "flash-attn installation failed, continuing without it"
+# Install flash-attn from pre-built wheel directly from GitHub releases
+# Python 3.10 (cp310), CUDA 12.1 (cu121), PyTorch 2.5.1
+# Downloading directly ensures NO compilation ever happens
+RUN pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu121torch2.5.1-cp310-cp310-linux_x86_64.whl || \
+    echo "WARNING: flash-attn wheel install failed, continuing without it"
 
-# Install VibeVoice package
+# Install VibeVoice package (with --only-binary to prevent any compilation)
 COPY vibevoice/ ./vibevoice/
 COPY demo/ ./demo/
-RUN pip install -e .
+RUN pip install --only-binary=:all: -e . || pip install -e .
 
 # Install API dependencies
 RUN pip install -r requirements-api.txt

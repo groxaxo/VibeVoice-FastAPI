@@ -86,16 +86,30 @@ if command -v nvidia-smi &> /dev/null; then
     echo "Installing PyTorch with CUDA support ($TORCH_INDEX)..."
     pip install torch torchaudio --index-url https://download.pytorch.org/whl/$TORCH_INDEX
     
-    # Install flash-attn (requires CUDA and compatible Python)
+    # Install flash-attn from pre-built wheel (NO COMPILATION)
     echo ""
-    echo "Installing flash-attn (this may take several minutes)..."
+    echo "Installing flash-attn from pre-built wheel..."
     echo "Note: This is optional but recommended for better performance"
-    pip install flash-attn --no-build-isolation || {
-        echo "⚠️  WARNING: flash-attn installation failed. Will use SDPA fallback."
-        echo "You can try installing manually later with:"
-        echo "  source venv/bin/activate"
-        echo "  pip install flash-attn --no-build-isolation"
-    }
+    
+    # Determine the correct wheel based on Python version and CUDA
+    PY_VERSION_SHORT=$(python -c 'import sys; print(f"cp{sys.version_info.major}{sys.version_info.minor}")')
+    
+    if [ "$TORCH_INDEX" = "cu121" ]; then
+        FLASH_WHEEL_URL="https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu121torch2.5.1-${PY_VERSION_SHORT}-${PY_VERSION_SHORT}-linux_x86_64.whl"
+    elif [ "$TORCH_INDEX" = "cu118" ]; then
+        FLASH_WHEEL_URL="https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu118torch2.4cxx11abiFALSE-${PY_VERSION_SHORT}-${PY_VERSION_SHORT}-linux_x86_64.whl"
+    else
+        echo "⚠️  WARNING: No pre-built flash-attn wheel for CUDA $CUDA_VERSION"
+        FLASH_WHEEL_URL=""
+    fi
+    
+    if [ -n "$FLASH_WHEEL_URL" ]; then
+        pip install "$FLASH_WHEEL_URL" && \
+        echo "✓ flash-attn installed from pre-built wheel" || {
+            echo "⚠️  WARNING: flash-attn pre-built wheel installation failed. Will use SDPA fallback."
+            echo "Available wheels: https://github.com/Dao-AILab/flash-attention/releases/tag/v2.8.3"
+        }
+    fi
 else
     echo "ℹ️  No CUDA detected, installing CPU-only PyTorch"
     pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
