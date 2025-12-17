@@ -1,158 +1,297 @@
-> [!IMPORTANT]
-> Microsoft recently released VibeVoice, a high-quality conversational TTS model, but has since deleted the official GitHub repository and removed the 7B model from Modelscope.
-> This project serves as a community-maintained backup of the original source code for preservation.
-> 
-> *   **7B Model Weights**: The original 7B model weights have been re-uploaded for accessibility here: [VibeVoice-Large-7B](https://www.modelscope.cn/models/microsoft/VibeVoice-Large)
-> *   **Live Demo**: To experience the inference capabilities of the VibeVoice 1.5B or 7B model directly via a web UI, visit our online service: **https://vibevoice.info**
+# VibeVoice FastAPI Server
+
+A production-ready FastAPI server that exposes the VibeVoice TTS model as an OpenAI-compatible API, with Docker support and comprehensive voice management.
 
 <div align="center">
 
-## 🎙️ VibeVoice: A Frontier Long Conversational Text-to-Speech Model
-[![Project Page](https://img.shields.io/badge/Project-Page-blue?logo=microsoft)](https://microsoft.github.io/VibeVoice)
-[![Hugging Face](https://img.shields.io/badge/HuggingFace-Collection-orange?logo=huggingface)](https://huggingface.co/collections/microsoft/vibevoice-68a2ef24a875c44be47b034f)
-[![Technical Report](https://img.shields.io/badge/Technical-Report-red?logo=adobeacrobatreader)](https://arxiv.org/pdf/2508.19205)
-[![Colab](https://img.shields.io/badge/Run-Colab-orange?logo=googlecolab)](https://colab.research.google.com/github/akadoubleone/VibeVoice-Community/blob/main/demo/VibeVoice_colab.ipynb)
-[![Live Playground](https://img.shields.io/badge/Live-Playground-green?logo=gradio)](https://v.vibevoice.info)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green?logo=fastapi)](https://fastapi.tiangolo.com)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)](https://www.python.org)
+[![Docker](https://img.shields.io/badge/Docker-Ready-blue?logo=docker)](https://www.docker.com)
+[![OpenAI Compatible](https://img.shields.io/badge/OpenAI-Compatible-orange?logo=openai)](https://platform.openai.com/docs/api-reference/audio)
 
 </div>
-<!-- <div align="center">
-<img src="Figures/log.png" alt="VibeVoice Logo" width="200">
-</div> -->
 
-<div align="center">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="Figures/VibeVoice_logo_white.png">
-  <img src="Figures/VibeVoice_logo.png" alt="VibeVoice Logo" width="300">
-</picture>
-</div>
+## 🚀 Features
 
-VibeVoice is a novel framework designed for generating **expressive**, **long-form**, **multi-speaker** conversational audio, such as podcasts, from text. It addresses significant challenges in traditional Text-to-Speech (TTS) systems, particularly in scalability, speaker consistency, and natural turn-taking.
+- **OpenAI-Compatible API**: Drop-in replacement for OpenAI's TTS API (`/v1/audio/speech`)
+- **Unlimited Custom Voices**: Automatically load any voice from a directory - just drop audio files and restart
+- **Multi-Format Support**: MP3, WAV, FLAC, AAC, M4A, Opus, PCM
+- **Streaming Support**: Real-time audio streaming for long-form content
+- **Docker Ready**: Complete Docker and docker-compose setup with GPU support
+- **Voice Management**: Dynamic voice loading, OpenAI voice mapping, and custom voice presets
+- **Production Ready**: Health checks, error handling, CORS support, and comprehensive logging
 
-A core innovation of VibeVoice is its use of continuous speech tokenizers (Acoustic and Semantic) operating at an ultra-low frame rate of 7.5 Hz. These tokenizers efficiently preserve audio fidelity while significantly boosting computational efficiency for processing long sequences. VibeVoice employs a [next-token diffusion](https://arxiv.org/abs/2412.08635) framework, leveraging a Large Language Model (LLM) to understand textual context and dialogue flow, and a diffusion head to generate high-fidelity acoustic details.
+## 📋 Quick Start
 
-The model can synthesize speech up to **90 minutes** long with up to **4 distinct speakers**, surpassing the typical 1-2 speaker limits of many prior models. 
+### Option 1: Docker (Recommended)
 
-
-<p align="left">
-  <img src="Figures/MOS-preference.png" alt="MOS Preference Results" height="260px">
-  <img src="Figures/VibeVoice.jpg" alt="VibeVoice Overview" height="250px" style="margin-right: 10px;">
-</p>
-
-### 🔥 News
-
-- **[2025-08-26] 🎉 We Open Source the [VibeVoice-Large](https://www.modelscope.cn/models/microsoft/VibeVoice-Large) model weights!**
-- **[2025-08-28] 🎉 We provide a [Colab](https://colab.research.google.com/github/akadoubleone/VibeVoice-Community/blob/main/demo/VibeVoice_colab.ipynb) script for easy access to our model. Due to GPU memory limitations, only VibeVoice-1.5B is supported.**
-
-### 📋 TODO
-
-- [ ] Merge models into official Hugging Face repository ([PR](https://github.com/huggingface/transformers/pull/40546))
-- [ ] Release example training code and documentation
-- [ ] VibePod:  End-to-end solution that creates podcasts from documents, webpages, or even a simple topic.
-
-### 🎵 Demo Examples
-
-**Live Demo**: To experience the inference capabilities of the VibeVoice 7B model directly via a web UI, visit our online service: **https://vibevoice.info**
-
-For more examples, see the [Project Page](https://microsoft.github.io/VibeVoice).
-
-
-## Models
-| Model | Context Length | Generation Length |  Weight |
-|-------|----------------|----------|----------|
-| VibeVoice-0.5B-Streaming | - | - | On the way |
-| VibeVoice-1.5B | 64K | ~90 min | [HF link](https://huggingface.co/microsoft/VibeVoice-1.5B) |
-| VibeVoice-Large| 32K | ~45 min | [HF link](https://www.modelscope.cn/models/microsoft/VibeVoice-Large) |
-
-## Installation
-We recommend to use NVIDIA Deep Learning Container to manage the CUDA environment. 
-
-1. Launch docker
 ```bash
-# NVIDIA PyTorch Container 24.07 / 24.10 / 24.12 verified. 
-# Later versions are also compatible.
-sudo docker run --privileged --net=host --ipc=host --ulimit memlock=-1:-1 --ulimit stack=-1:-1 --gpus all --rm -it  nvcr.io/nvidia/pytorch:24.07-py3
+# Clone the repository
+git clone https://github.com/ncoder-ai/VibeVoice-FastAPI.git
+cd VibeVoice-FastAPI
 
-## If flash attention is not included in your docker environment, you need to install it manually
-## Refer to https://github.com/Dao-AILab/flash-attention for installation instructions
-# pip install flash-attn --no-build-isolation
+# Copy and configure environment
+cp docker-env.example .env
+# Edit .env with your settings
+
+# Build and run
+docker-compose up -d
+
+# Check logs
+docker-compose logs -f
 ```
 
-2. Install from github
-```bash
-git clone https://github.com/shijincai/VibeVoice.git
-cd VibeVoice/
+### Option 2: Local Installation
 
+```bash
+# Clone the repository
+git clone https://github.com/ncoder-ai/VibeVoice-FastAPI.git
+cd VibeVoice-FastAPI
+
+# Run setup script
+./setup.sh
+
+# Configure environment
+cp env.example .env
+# Edit .env with your settings
+
+# Start server
+./start.sh
+```
+
+The API will be available at `http://localhost:8000`
+
+## 📖 Documentation
+
+- **[API README](API_README.md)** - Complete API documentation with examples
+- **[Quick Start Guide](QUICKSTART.md)** - Get up and running in 5 minutes
+- **[Docker Guide](DOCKER_GUIDE.md)** - Docker deployment instructions
+- **[Voice Usage Guide](VOICE_USAGE_GUIDE.md)** - How to use and manage voices
+- **[Custom Voices Guide](CUSTOM_VOICES_GUIDE.md)** - Adding your own voices
+- **[Models Guide](MODELS_GUIDE.md)** - Available VibeVoice models
+
+## 🎯 API Endpoints
+
+### OpenAI-Compatible Endpoints
+
+- `POST /v1/audio/speech` - Generate speech from text (OpenAI-compatible)
+- `GET /v1/audio/voices` - List all available voices
+
+### VibeVoice-Specific Endpoints
+
+- `POST /v1/vibevoice/generate` - Advanced generation with multi-speaker support
+- `GET /v1/vibevoice/voices` - List all voices with detailed info
+- `GET /v1/vibevoice/health` - Detailed health check
+
+### Example: Generate Speech
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "tts-1",
+    "input": "Hello, this is a test of the VibeVoice API",
+    "voice": "alloy",
+    "response_format": "mp3"
+  }' \
+  --output speech.mp3
+```
+
+### Example: List Voices
+
+```bash
+# List all voices (141+ voices)
+curl http://localhost:8000/v1/audio/voices
+
+# List with OpenAI format
+curl http://localhost:8000/v1/audio/voices | jq
+```
+
+## 🎤 Voice Management
+
+### Using OpenAI-Compatible Voices
+
+The API includes 6 OpenAI-compatible voice mappings:
+- `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`
+
+### Using Custom Voices
+
+Simply place audio files (`.wav`, `.mp3`, `.flac`, `.m4a`, etc.) in your `VOICES_DIR` and restart the server. All files are automatically loaded as voice presets!
+
+```bash
+# Add a custom voice
+cp my_voice.wav /path/to/voices/custom_voice.wav
+# Restart server - voice is now available!
+```
+
+### Direct Voice Usage
+
+You can use any voice name directly in API requests:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "tts-1",
+    "input": "Testing custom voice",
+    "voice": "custom_voice",
+    "response_format": "wav"
+  }'
+```
+
+## ⚙️ Configuration
+
+Key environment variables (see `env.example` for full list):
+
+```bash
+# Model Configuration
+VIBEVOICE_MODEL_PATH=microsoft/VibeVoice-1.5B  # or local path
+VIBEVOICE_DEVICE=cuda                           # cuda, cpu, or mps
+VIBEVOICE_INFERENCE_STEPS=10                    # 5-50, higher = better quality
+
+# Voice Configuration
+VOICES_DIR=demo/voices                           # Directory with voice files
+
+# API Configuration
+API_PORT=8000
+API_CORS_ORIGINS=*
+
+# Generation Defaults
+DEFAULT_CFG_SCALE=1.3                            # 1.0-3.0
+DEFAULT_RESPONSE_FORMAT=mp3
+```
+
+## 🐳 Docker Deployment
+
+### Requirements
+
+- Docker with NVIDIA Container Toolkit (for GPU support)
+- NVIDIA GPU with 8GB+ VRAM (for 1.5B model) or 16GB+ (for Large model)
+
+### Quick Start
+
+```bash
+# Build image
+docker build -t vibevoice-api:latest .
+
+# Run container
+docker run -d \
+  --name vibevoice-api \
+  --gpus all \
+  -p 8000:8000 \
+  -v /path/to/voices:/app/voices:ro \
+  -v ~/.cache/huggingface:/root/.cache/huggingface:rw \
+  -e VIBEVOICE_MODEL_PATH=microsoft/VibeVoice-1.5B \
+  vibevoice-api:latest
+```
+
+See [DOCKER_GUIDE.md](DOCKER_GUIDE.md) for detailed instructions.
+
+## 🔧 Development
+
+### Setup Development Environment
+
+```bash
+# Create virtual environment
+python3.11 -m venv venv
+source venv/bin/activate
+
+# Install dependencies
 pip install -e .
+pip install -r requirements-api.txt
+
+# Install PyTorch (CUDA)
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+# Optional: Install flash-attn for faster inference
+pip install flash-attn --no-build-isolation
 ```
 
-## Usages
+### Running Tests
 
-### 🚨 Tips
-We observed users may encounter occasional instability when synthesizing Chinese speech. We recommend:
-
-- Using English punctuation even for Chinese text, preferably only commas and periods.
-- Using the Large model variant, which is considerably more stable.
-- If you found the generated voice speak too fast. Please try to chunk your text with multiple speaker turns with same speaker label.
-
-We'd like to thank [PsiPi](https://huggingface.co/PsiPi) for sharing an interesting way for emotion control. Detials can be found via [discussion12](https://huggingface.co/microsoft/VibeVoice-1.5B/discussions/12).
-
-### Usage 1: Launch Gradio demo
 ```bash
-apt update && apt install ffmpeg -y # for demo
+# Start server
+./start.sh
 
-# For 1.5B model
-python demo/gradio_demo.py --model_path microsoft/VibeVoice-1.5B --share
-
-# For Large model
-python demo/gradio_demo.py --model_path microsoft/VibeVoice-Large --share
+# Test API
+curl http://localhost:8000/health
+curl http://localhost:8000/v1/audio/voices
 ```
 
-### Usage 2: Inference from files directly
-```bash
-# We provide some LLM generated example scripts under demo/text_examples/ for demo
-# 1 speaker
-python demo/inference_from_file.py --model_path microsoft/VibeVoice-Large --txt_path demo/text_examples/1p_abs.txt --speaker_names Alice
+## 📊 Supported Models
 
-# or more speakers
-python demo/inference_from_file.py --model_path microsoft/VibeVoice-Large --txt_path demo/text_examples/2p_music.txt --speaker_names Alice Frank
-```
+| Model | Size | Context | Max Length | VRAM Required |
+|-------|------|---------|------------|---------------|
+| VibeVoice-1.5B | 1.5B | 64K | ~90 min | 8GB+ |
+| VibeVoice-Large | 7B | 32K | ~45 min | 16GB+ |
 
-## FAQ
-#### Q1: Is this a pretrained model?
-**A:** Yes, it's a pretrained model without any post-training or benchmark-specific optimizations. In a way, this makes VibeVoice very versatile and fun to use.
+Models are automatically downloaded from HuggingFace on first use.
 
-#### Q2: Randomly trigger Sounds / Music / BGM.
-**A:** As you can see from our demo page, the background music or sounds are spontaneous. This means we can't directly control whether they are generated or not. The model is content-aware, and these sounds are triggered based on the input text and the chosen voice prompt.
+## 🛠️ System Requirements
 
-Here are a few things we've noticed:
-*   If the voice prompt you use contains background music, the generated speech is more likely to have it as well. (The Large model is quite stable and effective at this—give it a try on the demo!)
-*   If the voice prompt is clean (no BGM), but the input text includes introductory words or phrases like "Welcome to," "Hello," or "However," background music might still appear.
-*   Speaker voice related, using "Alice" results in random BGM than others (fixed).
-*   In other scenarios, the Large model is more stable and has a lower probability of generating unexpected background music.
+### Minimum
+- **GPU**: NVIDIA GPU with 8GB VRAM
+- **RAM**: 16GB
+- **Storage**: 10GB (for model and dependencies)
+- **OS**: Linux, macOS, or Windows (with WSL2)
 
-In fact, we intentionally decided not to denoise our training data because we think it's an interesting feature for BGM to show up at just the right moment. You can think of it as a little easter egg we left for you.
+### Recommended
+- **GPU**: NVIDIA GPU with 16GB+ VRAM
+- **RAM**: 32GB
+- **Storage**: 50GB (with model cache)
+- **Python**: 3.10 or 3.11
 
-#### Q3: Text normalization?
-**A:** We don't perform any text normalization during training or inference. Our philosophy is that a large language model should be able to handle complex user inputs on its own. However, due to the nature of the training data, you might still run into some corner cases.
+## 🔐 Security Notes
 
-#### Q4: Singing Capability.
-**A:** Our training data **doesn't contain any music data**. The ability to sing is an emergent capability of the model (which is why it might sound off-key, even on a famous song like 'See You Again'). (The Large model is more likely to exhibit this than the 1.5B).
+- The API does not include authentication by default. For production use, add authentication middleware or deploy behind a reverse proxy with authentication.
+- Voice files are loaded from the configured directory - ensure proper file permissions.
+- Model weights are downloaded from HuggingFace - verify model integrity in production.
 
-#### Q5: Some Chinese pronunciation errors.
-**A:** The volume of Chinese data in our training set is significantly smaller than the English data. Additionally, certain special characters (e.g., Chinese quotation marks) may occasionally cause pronunciation issues.
+## 📝 License
 
-#### Q6: Instability of cross-lingual transfer.
-**A:** The model does exhibit strong cross-lingual transfer capabilities, including the preservation of accents, but its performance can be unstable. This is an emergent ability of the model that we have not specifically optimized. It's possible that a satisfactory result can be achieved through repeated sampling.
+This project maintains the original VibeVoice model codebase. Please refer to the original VibeVoice license for model usage terms.
 
-## Risks and limitations
+## 🤝 Contributing
 
-While efforts have been made to optimize it through various techniques, it may still produce outputs that are unexpected, biased, or inaccurate. VibeVoice inherits any biases, errors, or omissions produced by its base model (specifically, Qwen2.5 1.5b in this release).
-Potential for Deepfakes and Disinformation: High-quality synthetic speech can be misused to create convincing fake audio content for impersonation, fraud, or spreading disinformation. Users must ensure transcripts are reliable, check content accuracy, and avoid using generated content in misleading ways. Users are expected to use the generated content and to deploy the models in a lawful manner, in full compliance with all applicable laws and regulations in the relevant jurisdictions. It is best practice to disclose the use of AI when sharing AI-generated content.
+Contributions are welcome! Please feel free to submit a Pull Request.
 
-English and Chinese only: Transcripts in languages other than English or Chinese may result in unexpected audio outputs.
+## 🙏 Acknowledgments
 
-Non-Speech Audio: The model focuses solely on speech synthesis and does not handle background noise, music, or other sound effects.
+- **VibeVoice Team** at Microsoft for the original model
+- **FastAPI** for the excellent web framework
+- **HuggingFace** for model hosting and transformers library
 
-Overlapping Speech: The current model does not explicitly model or generate overlapping speech segments in conversations.
+## 📚 Additional Resources
 
-We do not recommend using VibeVoice in commercial or real-world applications without further testing and development. This model is intended for research and development purposes only. Please use responsibly.
+- [VibeVoice Original Paper](https://arxiv.org/pdf/2508.19205)
+- [VibeVoice HuggingFace Collection](https://huggingface.co/collections/microsoft/vibevoice-68a2ef24a875c44be47b034f)
+- [FastAPI Documentation](https://fastapi.tiangolo.com)
+
+## ⚠️ Limitations
+
+- **Language Support**: Primarily English and Chinese. Other languages may produce unexpected results.
+- **Non-Speech Audio**: The model focuses on speech synthesis and may generate background music or sounds spontaneously.
+- **Commercial Use**: This model is intended for research and development. Test thoroughly before production use.
+
+## 🆘 Troubleshooting
+
+### Server won't start
+- Check GPU availability: `nvidia-smi`
+- Verify Python version: `python3 --version` (should be 3.10 or 3.11)
+- Check dependencies: `pip list | grep torch`
+
+### Out of memory errors
+- Use smaller model: `VIBEVOICE_MODEL_PATH=microsoft/VibeVoice-1.5B`
+- Reduce inference steps: `VIBEVOICE_INFERENCE_STEPS=5`
+- Use CPU mode: `VIBEVOICE_DEVICE=cpu` (much slower)
+
+### Voice not found errors
+- Verify `VOICES_DIR` path in `.env`
+- Check file permissions
+- Ensure audio files are in supported formats
+
+For more help, see the [API README](API_README.md) or open an issue.
+
+---
+
+**Made with ❤️ for the VibeVoice community**
