@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.0-cudnn8-runtime-ubuntu22.04
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -36,11 +36,12 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY requirements-api.txt ./
 
-# Install PyTorch with CUDA support (CUDA 12.1 compatible)
-RUN pip install --only-binary=:all: torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Install PyTorch with CUDA support (CUDA 12.8 compatible)
+RUN pip install --only-binary=:all: torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 # Install flash-attn from pre-built wheel directly from GitHub releases
-# Python 3.10 (cp310), CUDA 12 (cu12), PyTorch 2.5
+# Python 3.10 (cp310), CUDA 12.x (cu12 wheel works with 12.1-12.8), PyTorch 2.5+
+# Note: cu12 wheel is compatible with CUDA 12.1 through 12.8
 # Downloading directly ensures NO compilation ever happens
 RUN pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.5cxx11abiFALSE-cp310-cp310-linux_x86_64.whl || \
     echo "WARNING: flash-attn wheel install failed, continuing without it"
