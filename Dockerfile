@@ -6,7 +6,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_NO_BUILD_ISOLATION=0 \
-    PIP_ONLY_BINARY=:all:
+    PIP_ONLY_BINARY=:all: \
+    MAX_JOBS=2 \
+    MAKEFLAGS="-j2"
 
 # Install system dependencies (NO build-essential - we don't compile!)
 RUN apt-get update && apt-get install -y \
@@ -38,9 +40,9 @@ COPY requirements-api.txt ./
 RUN pip install --only-binary=:all: torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
 # Install flash-attn from pre-built wheel directly from GitHub releases
-# Python 3.10 (cp310), CUDA 12.1 (cu121), PyTorch 2.5.1
+# Python 3.10 (cp310), CUDA 12 (cu12), PyTorch 2.5
 # Downloading directly ensures NO compilation ever happens
-RUN pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu121torch2.5.1-cp310-cp310-linux_x86_64.whl || \
+RUN pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.5cxx11abiTRUE-cp310-cp310-linux_x86_64.whl || \
     echo "WARNING: flash-attn wheel install failed, continuing without it"
 
 # Install VibeVoice package (with --only-binary to prevent any compilation)
@@ -48,8 +50,8 @@ COPY vibevoice/ ./vibevoice/
 COPY demo/ ./demo/
 RUN pip install --only-binary=:all: -e . || pip install -e .
 
-# Install API dependencies
-RUN pip install -r requirements-api.txt
+# Install API dependencies (with --only-binary safeguard)
+RUN pip install --only-binary=:all: -r requirements-api.txt || pip install -r requirements-api.txt
 
 # Copy API code
 COPY api/ ./api/

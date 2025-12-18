@@ -63,6 +63,14 @@ echo "Upgrading pip and installing build tools..."
 pip install --upgrade pip wheel setuptools
 
 # ============================================================
+# Set environment variables to prevent compilation hangs
+# ============================================================
+export PIP_ONLY_BINARY=:all:
+export MAX_JOBS=2
+export MAKEFLAGS="-j2"
+echo "✓ Set MAX_JOBS=2 to prevent system hangs if compilation occurs"
+
+# ============================================================
 # Detect CUDA and install PyTorch
 # ============================================================
 echo ""
@@ -84,7 +92,7 @@ if command -v nvidia-smi &> /dev/null; then
     fi
     
     echo "Installing PyTorch with CUDA support ($TORCH_INDEX)..."
-    pip install torch torchaudio --index-url https://download.pytorch.org/whl/$TORCH_INDEX
+    pip install --only-binary=:all: torch torchaudio --index-url https://download.pytorch.org/whl/$TORCH_INDEX
     
     # Install flash-attn from pre-built wheel (NO COMPILATION)
     echo ""
@@ -95,7 +103,7 @@ if command -v nvidia-smi &> /dev/null; then
     PY_VERSION_SHORT=$(python -c 'import sys; print(f"cp{sys.version_info.major}{sys.version_info.minor}")')
     
     if [ "$TORCH_INDEX" = "cu121" ]; then
-        FLASH_WHEEL_URL="https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu121torch2.5.1-${PY_VERSION_SHORT}-${PY_VERSION_SHORT}-linux_x86_64.whl"
+        FLASH_WHEEL_URL="https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.5cxx11abiTRUE-${PY_VERSION_SHORT}-${PY_VERSION_SHORT}-linux_x86_64.whl"
     elif [ "$TORCH_INDEX" = "cu118" ]; then
         FLASH_WHEEL_URL="https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu118torch2.4cxx11abiFALSE-${PY_VERSION_SHORT}-${PY_VERSION_SHORT}-linux_x86_64.whl"
     else
@@ -112,7 +120,7 @@ if command -v nvidia-smi &> /dev/null; then
     fi
 else
     echo "ℹ️  No CUDA detected, installing CPU-only PyTorch"
-    pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+    pip install --only-binary=:all: torch torchaudio --index-url https://download.pytorch.org/whl/cpu
     echo "Note: flash-attn requires CUDA and will not be installed."
 fi
 
