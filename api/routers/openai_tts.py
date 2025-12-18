@@ -103,19 +103,30 @@ async def list_voices(
     """
     List all available voices in OpenAI-compatible format.
     
-    Returns all voices from the voices directory, formatted as OpenAI voice objects.
+    Returns OpenAI standard voices (if their mapped presets exist) plus all custom voices.
     """
     try:
-        all_voices = voices.list_available_voices()
-        
-        # Format as OpenAI-compatible voice objects
         voice_list = []
+        
+        # Add OpenAI standard voices (if their mapped presets exist)
+        for openai_name, vibevoice_preset in voices.OPENAI_VOICE_MAPPING.items():
+            if vibevoice_preset in voices.voice_presets:
+                voice_list.append({
+                    "id": openai_name,
+                    "object": "voice",
+                    "name": openai_name
+                })
+        
+        # Add all custom voices from VOICES_DIR
+        all_voices = voices.list_available_voices()
         for voice in all_voices:
-            voice_list.append({
-                "id": voice["name"],
-                "object": "voice",
-                "name": voice["name"]
-            })
+            # Skip if already added as OpenAI voice
+            if voice["name"] not in voices.OPENAI_VOICE_MAPPING.values():
+                voice_list.append({
+                    "id": voice["name"],
+                    "object": "voice",
+                    "name": voice["name"]
+                })
         
         return {
             "object": "list",
