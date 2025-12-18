@@ -40,8 +40,9 @@ RUN pip install --upgrade pip setuptools wheel
 COPY pyproject.toml README.md ./
 COPY requirements-api.txt ./
 
-# Install PyTorch with CUDA support (CUDA 12.8 compatible)
-RUN pip install --only-binary=:all: torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+# Install PyTorch with CUDA support
+# Use cu121 PyTorch 2.5 to match flash-attention wheel (cu121 wheels work with CUDA 12.8 runtime)
+RUN pip install --only-binary=:all: torch==2.5.* torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
 # Install flash-attn from pre-built wheel directly from GitHub releases
 # Python 3.12 (cp312), CUDA 12.x (cu12 wheel works with 12.1-12.8), PyTorch 2.5+
