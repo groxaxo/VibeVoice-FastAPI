@@ -109,8 +109,9 @@ curl http://localhost:8001/v1/audio/voices
 curl http://localhost:8001/v1/audio/voices | jq
 ```
 ## MODEL MANAGEMENT
-VibeeVoice Large: Huggingface: rsxdalv/VibeVoice-Large
-VibeVoice 1.5B: Huggingface microsoft/VibeVoice-1.5B
+VibeeVoice Large: Huggingface: rsxdalv/VibeVoice-Large [https://huggingface.co/rsxdalv/VibeVoice-Large]
+
+VibeVoice 1.5B: Huggingface microsoft/VibeVoice-1.5B [https://huggingface.co/microsoft/VibeVoice-1.5B]
 ## 🎤 Voice Management
 
 ### Using OpenAI-Compatible Voices
