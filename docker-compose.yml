@@ -36,6 +36,11 @@ services:
     env_file:
       - .env
     
+    # Override VOICES_DIR for container (always use /app/voices inside container)
+    # The host path is used for volume mounting, but inside container it's always /app/voices
+    environment:
+      - VOICES_DIR=/app/voices
+    
     # Volume mounts
     volumes:
       # Mount voices directory

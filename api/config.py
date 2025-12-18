@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     
     # Voice Configuration
     voices_dir: str = Field(
-        default="demo/voices",
+        default="/app/voices",  # Docker default; override with VOICES_DIR=demo/voices for local dev
         description="Directory containing voice preset audio files"
     )
     
