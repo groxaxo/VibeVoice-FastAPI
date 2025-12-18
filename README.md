@@ -5,7 +5,7 @@ A production-ready FastAPI server that exposes the VibeVoice TTS model as an Ope
 <div align="center">
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green?logo=fastapi)](https://fastapi.tiangolo.com)
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)](https://www.python.org)
+[![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python)](https://www.python.org)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue?logo=docker)](https://www.docker.com)
 [![OpenAI Compatible](https://img.shields.io/badge/OpenAI-Compatible-orange?logo=openai)](https://platform.openai.com/docs/api-reference/audio)
 
@@ -13,17 +13,19 @@ A production-ready FastAPI server that exposes the VibeVoice TTS model as an Ope
 
 ## 🚀 Features
 
+- **Docker-First Deployment**: Production-ready Docker setup with GPU support (recommended)
 - **OpenAI-Compatible API**: Drop-in replacement for OpenAI's TTS API (`/v1/audio/speech`)
 - **Unlimited Custom Voices**: Automatically load any voice from a directory - just drop audio files and restart
 - **Multi-Format Support**: MP3, WAV, FLAC, AAC, M4A, Opus, PCM
 - **Streaming Support**: Real-time audio streaming for long-form content
-- **Docker Ready**: Complete Docker and docker-compose setup with GPU support
 - **Voice Management**: Dynamic voice loading, OpenAI voice mapping, and custom voice presets
 - **Production Ready**: Health checks, error handling, CORS support, and comprehensive logging
 
 ## 📋 Quick Start
 
-### Option 1: Docker (Recommended)
+**Docker is the recommended deployment method** - it handles all dependencies, ensures consistent environments, and is production-ready.
+
+### Docker Deployment (Recommended)
 
 ```bash
 # Clone the repository
@@ -32,7 +34,7 @@ cd VibeVoice-FastAPI
 
 # Copy and configure environment
 cp docker-env.example .env
-# Edit .env with your settings
+# Edit .env - set VOICES_DIR to your voice files path
 
 # Build and run
 docker-compose up -d
@@ -41,7 +43,13 @@ docker-compose up -d
 docker-compose logs -f
 ```
 
-### Option 2: Local Installation
+The API will be available at `http://localhost:8001`
+
+See [DOCKER_QUICKSTART.md](DOCKER_QUICKSTART.md) for detailed Docker instructions.
+
+### Local Installation (Alternative)
+
+For development or if you prefer bare-metal installation:
 
 ```bash
 # Clone the repository
@@ -59,12 +67,10 @@ cp env.example .env
 ./start.sh
 ```
 
-The API will be available at `http://localhost:8000`
-
 ## 📖 Documentation
 
 - **[API README](API_README.md)** - Complete API documentation with examples, voice management, and troubleshooting
-- **[Docker Guide](DOCKER_GUIDE.md)** - Docker deployment instructions
+- **[Docker Quickstart](DOCKER_QUICKSTART.md)** - Docker deployment quickstart guide
 
 ## 🎯 API Endpoints
 
@@ -82,7 +88,7 @@ The API will be available at `http://localhost:8000`
 ### Example: Generate Speech
 
 ```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
+curl -X POST http://localhost:8001/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
     "model": "tts-1",
@@ -96,11 +102,11 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 ### Example: List Voices
 
 ```bash
-# List all voices (141+ voices)
-curl http://localhost:8000/v1/audio/voices
+# List all available voices
+curl http://localhost:8001/v1/audio/voices
 
 # List with OpenAI format
-curl http://localhost:8000/v1/audio/voices | jq
+curl http://localhost:8001/v1/audio/voices | jq
 ```
 
 ## 🎤 Voice Management
@@ -125,7 +131,7 @@ cp my_voice.wav /path/to/voices/custom_voice.wav
 You can use any voice name directly in API requests:
 
 ```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
+curl -X POST http://localhost:8001/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
     "model": "tts-1",
@@ -149,7 +155,7 @@ VIBEVOICE_INFERENCE_STEPS=10                    # 5-50, higher = better quality
 VOICES_DIR=demo/voices                           # Directory with voice files
 
 # API Configuration
-API_PORT=8000
+API_PORT=8001
 API_CORS_ORIGINS=*
 
 # Generation Defaults
@@ -159,29 +165,34 @@ DEFAULT_RESPONSE_FORMAT=mp3
 
 ## 🐳 Docker Deployment
 
+Docker is the **recommended and preferred** deployment method. It provides:
+- ✅ Consistent environment across all systems
+- ✅ No dependency conflicts
+- ✅ Easy GPU configuration
+- ✅ Production-ready setup
+- ✅ Simplified updates and maintenance
+
 ### Requirements
 
-- Docker with NVIDIA Container Toolkit (for GPU support)
+- Docker and Docker Compose
+- NVIDIA Container Toolkit (for GPU support)
 - NVIDIA GPU with 8GB+ VRAM (for 1.5B model) or 16GB+ (for Large model)
 
 ### Quick Start
 
 ```bash
-# Build image
-docker build -t vibevoice-api:latest .
+# Copy and configure environment
+cp docker-env.example .env
+# Edit .env - set VOICES_DIR to your voice files path
 
-# Run container
-docker run -d \
-  --name vibevoice-api \
-  --gpus all \
-  -p 8000:8000 \
-  -v /path/to/voices:/app/voices:ro \
-  -v ~/.cache/huggingface:/root/.cache/huggingface:rw \
-  -e VIBEVOICE_MODEL_PATH=microsoft/VibeVoice-1.5B \
-  vibevoice-api:latest
+# Build and run
+docker-compose up -d
+
+# Check logs
+docker-compose logs -f
 ```
 
-See [DOCKER_GUIDE.md](DOCKER_GUIDE.md) for detailed instructions.
+See [DOCKER_QUICKSTART.md](DOCKER_QUICKSTART.md) for complete Docker deployment guide.
 
 ## 🔧 Development
 
@@ -189,7 +200,7 @@ See [DOCKER_GUIDE.md](DOCKER_GUIDE.md) for detailed instructions.
 
 ```bash
 # Create virtual environment
-python3.11 -m venv venv
+python3.12 -m venv venv
 source venv/bin/activate
 
 # Install dependencies
@@ -197,10 +208,10 @@ pip install -e .
 pip install -r requirements-api.txt
 
 # Install PyTorch (CUDA)
-pip install torch --index-url https://download.pytorch.org/whl/cu121
+pip install torch --index-url https://download.pytorch.org/whl/cu128
 
 # Optional: Install flash-attn for faster inference
-pip install flash-attn --no-build-isolation
+# See setup.sh for pre-built wheel installation
 ```
 
 ### Running Tests
@@ -210,8 +221,8 @@ pip install flash-attn --no-build-isolation
 ./start.sh
 
 # Test API
-curl http://localhost:8000/health
-curl http://localhost:8000/v1/audio/voices
+curl http://localhost:8001/health
+curl http://localhost:8001/v1/audio/voices
 ```
 
 ## 📊 Supported Models
@@ -225,17 +236,20 @@ Models are automatically downloaded from HuggingFace on first use.
 
 ## 🛠️ System Requirements
 
-### Minimum
-- **GPU**: NVIDIA GPU with 8GB VRAM
-- **RAM**: 16GB
-- **Storage**: 10GB (for model and dependencies)
-- **OS**: Linux, macOS, or Windows (with WSL2)
+**For Docker Deployment (Recommended):**
+- **Docker**: Docker and Docker Compose installed
+- **GPU**: NVIDIA GPU with 8GB+ VRAM (for 1.5B model) or 16GB+ (for Large model)
+- **NVIDIA Container Toolkit**: Required for GPU support
+- **RAM**: 16GB minimum, 32GB recommended
+- **Storage**: 10GB minimum, 50GB recommended (with model cache)
+- **OS**: Linux (recommended), macOS, or Windows (with WSL2)
 
-### Recommended
-- **GPU**: NVIDIA GPU with 16GB+ VRAM
-- **RAM**: 32GB
-- **Storage**: 50GB (with model cache)
-- **Python**: 3.10 or 3.11
+**For Local Installation:**
+- **Python**: 3.12
+- **GPU**: NVIDIA GPU with 8GB+ VRAM
+- **RAM**: 16GB minimum, 32GB recommended
+- **Storage**: 10GB minimum, 50GB recommended
+- **OS**: Linux, macOS, or Windows (with WSL2)
 
 ## 🔐 Security Notes
 
@@ -273,7 +287,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ### Server won't start
 - Check GPU availability: `nvidia-smi`
-- Verify Python version: `python3 --version` (should be 3.10 or 3.11)
+- Verify Python version: `python3 --version` (should be 3.12)
 - Check dependencies: `pip list | grep torch`
 
 ### Out of memory errors
