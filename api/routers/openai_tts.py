@@ -77,12 +77,15 @@ async def create_speech(
         )
         generation_time = time.time() - start_time
         
+        # Calculate audio duration
+        audio_duration = get_audio_duration(audio, sample_rate=24000)
+        
         # Log generation details at INFO level
         text_preview = request.input[:100] + "..." if len(request.input) > 100 else request.input
         logger.info(
             f"Generated speech - Text: {text_preview} | Voice: {request.voice} | "
             f"Model: {request.model} ({settings.vibevoice_model_path}) | "
-            f"CFG: {settings.default_cfg_scale} | Time: {generation_time:.2f}s"
+            f"CFG: {settings.default_cfg_scale} | Audio Duration: {audio_duration:.2f}s | Generation Time: {generation_time:.2f}s"
         )
         
         # Convert to requested format

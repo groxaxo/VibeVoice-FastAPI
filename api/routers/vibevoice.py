@@ -161,13 +161,16 @@ async def generate_speech(
             )
             generation_time = time.time() - start_time
             
+            # Calculate audio duration
+            audio_duration = get_audio_duration(audio, sample_rate=24000)
+            
             # Log generation details at INFO level
             text_preview = request.script[:100] + "..." if len(request.script) > 100 else request.script
             logger.info(
                 f"Generated speech - Text: {text_preview} | Voices: {voices_str} | "
                 f"Model: {settings.vibevoice_model_path} | CFG: {request.cfg_scale} | "
                 f"Steps: {actual_inference_steps} | Seed: {request.seed if request.seed is not None else 'None'} | "
-                f"Time: {generation_time:.2f}s"
+                f"Audio Duration: {audio_duration:.2f}s | Generation Time: {generation_time:.2f}s"
             )
             
             # Convert to requested format
@@ -177,8 +180,8 @@ async def generate_speech(
                 format=request.response_format
             )
             
-            # Calculate duration
-            duration = get_audio_duration(audio, sample_rate=24000)
+            # Use the already calculated duration
+            duration = audio_duration
             
             # Return audio response
             from api.utils.audio_utils import get_content_type
