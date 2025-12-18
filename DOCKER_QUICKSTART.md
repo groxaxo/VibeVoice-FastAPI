@@ -1,0 +1,131 @@
+# Docker Quick Start Guide
+
+## Prerequisites
+
+- Docker and Docker Compose installed
+- NVIDIA GPU with CUDA support
+- NVIDIA Container Toolkit installed
+
+## Quick Start
+
+### 1. Setup Environment
+
+```bash
+# Copy environment file
+cp docker-env.example .env
+
+# Edit .env - set your voice directory path
+nano .env
+```
+
+**Required:** Set `VOICES_DIR` to the absolute path where your voice files are stored on the host.
+
+### 2. Build and Run
+
+```bash
+# Build and start
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop
+docker-compose down
+```
+
+### 3. Test the API
+
+```bash
+# Health check
+curl http://localhost:8001/health
+
+# API docs
+open http://localhost:8001/docs
+```
+
+## Configuration
+
+### Essential Settings in `.env`
+
+```bash
+# Model (HuggingFace ID or local path)
+VIBEVOICE_MODEL_PATH=microsoft/VibeVoice-1.5B
+
+# Voice directory on HOST (required)
+VOICES_DIR=/path/to/your/voices/on/host
+
+# Optional: HuggingFace cache for faster model loading
+HF_CACHE_DIR=~/.cache/huggingface
+```
+
+### GPU Configuration
+
+Edit `docker-compose.yml` to specify which GPU to use:
+
+```yaml
+deploy:
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          device_ids: ['0']  # Change to your GPU ID
+          capabilities: [gpu]
+```
+
+## Volume Mounts
+
+The following host paths are mounted into the container:
+
+- **Voices**: `${VOICES_DIR}` → `/app/voices` (read-only)
+- **HuggingFace Cache**: `${HF_CACHE_DIR}` → `/root/.cache/huggingface` (read-write, optional)
+- **Models**: `${MODELS_DIR}` → `/app/models` (read-write, optional)
+
+## Troubleshooting
+
+### No voices available
+
+Check that `VOICES_DIR` in `.env` points to the correct host path with voice files.
+
+### GPU not detected
+
+```bash
+# Test GPU access
+docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi
+
+# Check container GPU access
+docker exec vibevoice-api nvidia-smi
+```
+
+### Container won't start
+
+```bash
+# Check logs
+docker-compose logs vibevoice-api
+```
+
+### Slow model loading
+
+Mount your HuggingFace cache in `.env`:
+```bash
+HF_CACHE_DIR=~/.cache/huggingface
+```
+
+## Key Features
+
+- ✅ **No compilation** - All packages installed from pre-built wheels
+- ✅ **Fast builds** - Builds complete in minutes, not hours
+- ✅ **Python 3.10 + CUDA 12.1** - Optimized for wheel availability
+- ✅ **Flash-attention** - Pre-built wheel support (optional)
+
+## Resource Requirements
+
+- **Minimum**: 8GB GPU VRAM, 16GB RAM
+- **Recommended**: 16GB+ GPU VRAM, 32GB RAM
+
+## API Endpoints
+
+- Health: `http://localhost:8001/health`
+- API Docs: `http://localhost:8001/docs`
+- OpenAI-compatible TTS: `POST /v1/audio/speech`
+- List voices: `GET /v1/audio/voices`
+
