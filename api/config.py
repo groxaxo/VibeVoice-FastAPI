@@ -37,7 +37,7 @@ class Settings(BaseSettings):
         description="Directory containing voice preset audio files"
     )
     openai_voice_mapping: str = Field(
-        default='{"alloy": "en-us-f-aria", "echo": "en-us-m-eric", "fable": "alice", "onyx": "en-us-m-guy", "nova": "en-us-f-ana", "shimmer": "en-gb-f-sonia"}',
+        default='{"alloy": "en-Alice_woman", "echo": "en-Carter_man", "fable": "en-Maya_woman", "onyx": "en-Frank_man", "nova": "en-Mary_woman_bgm", "shimmer": "en-Alice_woman"}',
         description="JSON mapping of OpenAI voice names to VibeVoice preset names"
     )
     

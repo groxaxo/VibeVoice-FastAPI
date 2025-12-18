@@ -39,14 +39,14 @@ class VoiceManager:
     
     @staticmethod
     def _get_default_mapping() -> Dict[str, str]:
-        """Get default OpenAI voice mapping."""
+        """Get default OpenAI voice mapping using demo voices."""
         return {
-            "alloy": "en-us-f-aria",
-            "echo": "en-us-m-eric",
-            "fable": "alice",
-            "onyx": "en-us-m-guy",
-            "nova": "en-us-f-ana",
-            "shimmer": "en-gb-f-sonia"
+            "alloy": "en-Alice_woman",
+            "echo": "en-Carter_man",
+            "fable": "en-Maya_woman",
+            "onyx": "en-Frank_man",
+            "nova": "en-Mary_woman_bgm",
+            "shimmer": "en-Alice_woman"
         }
     
     def load_voice_presets(self):
