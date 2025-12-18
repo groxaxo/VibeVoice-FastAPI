@@ -1,6 +1,8 @@
 """VibeVoice-specific TTS endpoints with multi-speaker support."""
 
 import base64
+import logging
+import time
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import Response
 
@@ -15,6 +17,8 @@ from api.services.voice_manager import VoiceManager
 from api.utils.audio_utils import audio_to_bytes, get_audio_duration
 from api.utils.streaming import create_streaming_response
 from api.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/v1/vibevoice", tags=["VibeVoice Extended"])
@@ -104,9 +108,29 @@ async def generate_speech(
                     detail=f"Speaker {speaker_config.speaker_id} must have either voice_preset or voice_sample_base64"
                 )
         
+        # Extract voice presets for logging
+        voice_list = []
+        for speaker_config in sorted(request.speakers, key=lambda s: s.speaker_id):
+            if speaker_config.voice_preset:
+                voice_list.append(f"speaker{speaker_config.speaker_id}={speaker_config.voice_preset}")
+            else:
+                voice_list.append(f"speaker{speaker_config.speaker_id}=base64_audio")
+        voices_str = ", ".join(voice_list)
+        
+        # Get actual inference_steps value (request value or default from settings)
+        actual_inference_steps = request.inference_steps if request.inference_steps is not None else settings.vibevoice_inference_steps
+        
         # Generate speech
         if request.stream:
             # Return streaming response
+            # Note: For streaming, we log before generation starts since timing is async
+            text_preview = request.script[:100] + "..." if len(request.script) > 100 else request.script
+            logger.info(
+                f"Generating speech (streaming) - Text: {text_preview} | Voices: {voices_str} | "
+                f"Model: {settings.vibevoice_model_path} | CFG: {request.cfg_scale} | "
+                f"Steps: {actual_inference_steps} | Seed: {request.seed if request.seed is not None else 'None'}"
+            )
+            
             audio_stream = tts.generate_speech(
                 text=request.script,
                 voice_samples=voice_samples,
@@ -116,6 +140,7 @@ async def generate_speech(
                 stream=True
             )
             
+            # For streaming, we can't measure exact time, but log start
             return create_streaming_response(
                 audio_stream,
                 format=request.response_format,
@@ -125,6 +150,7 @@ async def generate_speech(
         
         else:
             # Generate all at once
+            start_time = time.time()
             audio = tts.generate_speech(
                 text=request.script,
                 voice_samples=voice_samples,
@@ -132,6 +158,16 @@ async def generate_speech(
                 inference_steps=request.inference_steps,
                 seed=request.seed,
                 stream=False
+            )
+            generation_time = time.time() - start_time
+            
+            # Log generation details at INFO level
+            text_preview = request.script[:100] + "..." if len(request.script) > 100 else request.script
+            logger.info(
+                f"Generated speech - Text: {text_preview} | Voices: {voices_str} | "
+                f"Model: {settings.vibevoice_model_path} | CFG: {request.cfg_scale} | "
+                f"Steps: {actual_inference_steps} | Seed: {request.seed if request.seed is not None else 'None'} | "
+                f"Time: {generation_time:.2f}s"
             )
             
             # Convert to requested format

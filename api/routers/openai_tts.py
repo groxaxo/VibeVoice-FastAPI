@@ -1,5 +1,7 @@
 """OpenAI-compatible TTS endpoint."""
 
+import logging
+import time
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import Response, StreamingResponse
 
@@ -9,6 +11,8 @@ from api.services.voice_manager import VoiceManager
 from api.utils.audio_utils import audio_to_bytes, get_content_type, get_audio_duration
 from api.utils.streaming import create_streaming_response
 from api.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/v1/audio", tags=["OpenAI Compatible"])
@@ -62,13 +66,23 @@ async def create_speech(
         # Format text as single-speaker script
         formatted_script = tts.format_script_for_single_speaker(request.input, speaker_id=0)
         
-        # Generate speech
+        # Generate speech with timing
         # Note: OpenAI API doesn't support streaming in the same way, but we can use chunked transfer
+        start_time = time.time()
         audio = tts.generate_speech(
             text=formatted_script,
             voice_samples=[voice_audio],
             cfg_scale=settings.default_cfg_scale,
             stream=False  # For OpenAI compatibility, generate all at once
+        )
+        generation_time = time.time() - start_time
+        
+        # Log generation details at INFO level
+        text_preview = request.input[:100] + "..." if len(request.input) > 100 else request.input
+        logger.info(
+            f"Generated speech - Text: {text_preview} | Voice: {request.voice} | "
+            f"Model: {request.model} ({settings.vibevoice_model_path}) | "
+            f"CFG: {settings.default_cfg_scale} | Time: {generation_time:.2f}s"
         )
         
         # Convert to requested format
