@@ -92,8 +92,13 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = Field(
         default="INFO",
-        description="Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL"
+        description="Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL (case-insensitive)"
     )
+    
+    @property
+    def normalized_log_level(self) -> str:
+        """Get log level normalized to uppercase for logging module."""
+        return self.log_level.upper()
     
     class Config:
         env_file = ".env"

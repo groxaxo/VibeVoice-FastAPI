@@ -42,7 +42,7 @@ RUN pip install --only-binary=:all: torch torchvision torchaudio --index-url htt
 # Install flash-attn from pre-built wheel directly from GitHub releases
 # Python 3.10 (cp310), CUDA 12 (cu12), PyTorch 2.5
 # Downloading directly ensures NO compilation ever happens
-RUN pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.5cxx11abiTRUE-cp310-cp310-linux_x86_64.whl || \
+RUN pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.5cxx11abiFALSE-cp310-cp310-linux_x86_64.whl || \
     echo "WARNING: flash-attn wheel install failed, continuing without it"
 
 # Install VibeVoice package (with --only-binary to prevent any compilation)

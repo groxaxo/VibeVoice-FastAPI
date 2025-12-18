@@ -15,7 +15,7 @@ from api.routers import openai_tts, vibevoice
 
 # Configure logging
 logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper()),
+    level=getattr(logging, settings.normalized_log_level),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -144,6 +144,6 @@ if __name__ == "__main__":
         host=settings.api_host,
         port=settings.api_port,
         workers=settings.api_workers,
-        log_level=settings.log_level.lower()
+        log_level=settings.normalized_log_level.lower()
     )
 
