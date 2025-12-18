@@ -268,6 +268,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ## 🙏 Acknowledgments
 
 - **VibeVoice Team** at Microsoft for the original model
+- **[shijincai](https://github.com/shijincai)** for maintaining a backup of the original VibeVoice codebase
 - **FastAPI** for the excellent web framework
 - **HuggingFace** for model hosting and transformers library
 
