@@ -12,8 +12,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # Install system dependencies (NO build-essential - we don't compile!)
 RUN apt-get update && apt-get install -y \
-    python3.10 \
-    python3.10-dev \
+    python3.12 \
+    python3.12-dev \
     python3-pip \
     git \
     ffmpeg \
@@ -22,9 +22,9 @@ RUN apt-get update && apt-get install -y \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Set Python 3.10 as default
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 && \
-    update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1
+# Set Python 3.12 as default
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 && \
+    update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1
 
 # Upgrade pip
 RUN python3 -m pip install --upgrade pip setuptools wheel
@@ -40,10 +40,10 @@ COPY requirements-api.txt ./
 RUN pip install --only-binary=:all: torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 # Install flash-attn from pre-built wheel directly from GitHub releases
-# Python 3.10 (cp310), CUDA 12.x (cu12 wheel works with 12.1-12.8), PyTorch 2.5+
+# Python 3.12 (cp312), CUDA 12.x (cu12 wheel works with 12.1-12.8), PyTorch 2.5+
 # Note: cu12 wheel is compatible with CUDA 12.1 through 12.8
 # Downloading directly ensures NO compilation ever happens
-RUN pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.5cxx11abiFALSE-cp310-cp310-linux_x86_64.whl || \
+RUN pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.5cxx11abiFALSE-cp312-cp312-linux_x86_64.whl || \
     echo "WARNING: flash-attn wheel install failed, continuing without it"
 
 # Install VibeVoice package (with --only-binary to prevent any compilation)
