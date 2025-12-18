@@ -14,7 +14,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y \
     python3.12 \
     python3.12-dev \
-    python3-pip \
+    python3.12-venv \
     git \
     ffmpeg \
     libsndfile1 \
@@ -26,11 +26,15 @@ RUN apt-get update && apt-get install -y \
 RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 && \
     update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1
 
-# Upgrade pip
-RUN python3 -m pip install --upgrade pip setuptools wheel
-
 # Set working directory
 WORKDIR /app
+
+# Create virtual environment
+RUN python3 -m venv /app/venv
+
+# Activate venv and upgrade pip
+ENV PATH="/app/venv/bin:$PATH"
+RUN pip install --upgrade pip setuptools wheel
 
 # Copy requirements first for better caching
 COPY pyproject.toml README.md ./
@@ -68,6 +72,6 @@ EXPOSE 8001
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8001/health || exit 1
 
-# Run the API
-CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${API_PORT:-8001}"]
+# Run the API (using venv python)
+CMD ["sh", "-c", "/app/venv/bin/uvicorn api.main:app --host 0.0.0.0 --port ${API_PORT:-8001}"]
 
