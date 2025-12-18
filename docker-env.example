@@ -7,6 +7,7 @@
 
 # Path to VibeVoice model (inside container or HuggingFace ID)
 VIBEVOICE_MODEL_PATH=microsoft/VibeVoice-1.5B
+#VIBEVOICE_MODEL_PATH=rsxdalv/VibeVoice-Large
 
 # Device for inference
 VIBEVOICE_DEVICE=cuda
@@ -49,7 +50,7 @@ LOG_LEVEL=INFO
 # Set these to absolute paths on your host system
 
 # Path to voices directory on host (mounted to /app/voices in container)
-VOICES_DIR=/path/to/your/voices/on/host
+VOICES_DIR=demo/voices
 
 # OpenAI voice name to VibeVoice preset mapping (JSON format)
 # Maps OpenAI-compatible voice names (alloy, echo, fable, onyx, nova, shimmer) to your voice preset files
