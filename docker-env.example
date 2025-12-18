@@ -27,7 +27,7 @@ API_CORS_ORIGINS=*
 # Generation Defaults
 # ============================================================
 
-DEFAULT_CFG_SCALE=1.3
+DEFAULT_CFG_SCALE=1.8
 DEFAULT_RESPONSE_FORMAT=mp3
 MAX_GENERATION_LENGTH=5400
 DEFAULT_DO_SAMPLE=False
@@ -50,6 +50,11 @@ LOG_LEVEL=INFO
 
 # Path to voices directory on host (mounted to /app/voices in container)
 VOICES_DIR=/path/to/your/voices/on/host
+
+# OpenAI voice name to VibeVoice preset mapping (JSON format)
+# Maps OpenAI-compatible voice names (alloy, echo, fable, onyx, nova, shimmer) to your voice preset files
+# Format: {"openai_voice_name": "vibevoice_preset_name", ...}
+OPENAI_VOICE_MAPPING={"alloy": "en-us-f-aria", "echo": "en-us-m-eric", "fable": "alice", "onyx": "en-us-m-guy", "nova": "en-us-f-ana", "shimmer": "en-gb-f-sonia"}
 
 # Path to HuggingFace cache on host (optional, for faster model loading)
 # Mounted to /root/.cache/huggingface in container

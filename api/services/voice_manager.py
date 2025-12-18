@@ -1,6 +1,7 @@
 """Voice preset management and OpenAI voice mapping."""
 
 import os
+import json
 from typing import Dict, List, Optional
 import numpy as np
 import soundfile as sf
@@ -13,26 +14,40 @@ import io
 class VoiceManager:
     """Manages voice presets and maps OpenAI voices to VibeVoice presets."""
     
-    # OpenAI voice to VibeVoice preset mapping
-    OPENAI_VOICE_MAPPING = {
-        "alloy": "en-us-f-aria",
-        "echo": "en-us-m-eric",
-        "fable": "alice",
-        "onyx": "en-us-m-guy",
-        "nova": "en-us-f-ana",
-        "shimmer": "en-gb-f-sonia"
-    }
-    
-    def __init__(self, voices_dir: str = "demo/voices"):
+    def __init__(self, voices_dir: str = "demo/voices", openai_voice_mapping: Optional[str] = None):
         """
         Initialize voice manager.
         
         Args:
             voices_dir: Directory containing voice preset files
+            openai_voice_mapping: JSON string mapping OpenAI voice names to VibeVoice preset names
         """
         self.voices_dir = Path(voices_dir)
         self.voice_presets: Dict[str, str] = {}
+        
+        # Parse OpenAI voice mapping from JSON string
+        if openai_voice_mapping:
+            try:
+                self.OPENAI_VOICE_MAPPING = json.loads(openai_voice_mapping)
+            except json.JSONDecodeError as e:
+                print(f"Warning: Failed to parse OPENAI_VOICE_MAPPING: {e}. Using default mapping.")
+                self.OPENAI_VOICE_MAPPING = self._get_default_mapping()
+        else:
+            self.OPENAI_VOICE_MAPPING = self._get_default_mapping()
+        
         self.load_voice_presets()
+    
+    @staticmethod
+    def _get_default_mapping() -> Dict[str, str]:
+        """Get default OpenAI voice mapping."""
+        return {
+            "alloy": "en-us-f-aria",
+            "echo": "en-us-m-eric",
+            "fable": "alice",
+            "onyx": "en-us-m-guy",
+            "nova": "en-us-f-ana",
+            "shimmer": "en-gb-f-sonia"
+        }
     
     def load_voice_presets(self):
         """Scan voices directory and load available presets."""

@@ -36,6 +36,10 @@ class Settings(BaseSettings):
         default="/app/voices",  # Docker default; override with VOICES_DIR=demo/voices for local dev
         description="Directory containing voice preset audio files"
     )
+    openai_voice_mapping: str = Field(
+        default='{"alloy": "en-us-f-aria", "echo": "en-us-m-eric", "fable": "alice", "onyx": "en-us-m-guy", "nova": "en-us-f-ana", "shimmer": "en-gb-f-sonia"}',
+        description="JSON mapping of OpenAI voice names to VibeVoice preset names"
+    )
     
     # API Server Configuration
     api_host: str = Field(

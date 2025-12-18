@@ -34,7 +34,10 @@ async def lifespan(app: FastAPI):
     
     # Initialize voice manager
     logger.info("Initializing voice manager...")
-    voice_manager = VoiceManager(voices_dir=settings.voices_dir)
+    voice_manager = VoiceManager(
+        voices_dir=settings.voices_dir,
+        openai_voice_mapping=settings.openai_voice_mapping
+    )
     
     # Initialize TTS service
     logger.info("Initializing TTS service...")
