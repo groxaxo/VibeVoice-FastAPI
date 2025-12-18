@@ -15,13 +15,6 @@ VIBEVOICE_DEVICE=cuda
 VIBEVOICE_INFERENCE_STEPS=10
 
 # ============================================================
-# Voice Configuration
-# ============================================================
-
-# Directory containing voice preset audio files (inside container)
-VOICES_DIR=/app/voices
-
-# ============================================================
 # API Server Configuration
 # ============================================================
 
@@ -50,15 +43,19 @@ DEFAULT_REPETITION_PENALTY=1.0
 LOG_LEVEL=INFO
 
 # ============================================================
-# Docker-specific: Host paths for volume mounts
+# Docker Volume Mounts (Host Paths)
 # ============================================================
+# All paths below are HOST paths that will be mounted into the container
+# Set these to absolute paths on your host system
 
-# Path to voices directory on host (will be mounted to /app/voices)
-# VOICES_DIR=/home/user/my-voices
+# Path to voices directory on host (mounted to /app/voices in container)
+VOICES_DIR=/path/to/your/voices/on/host
 
 # Path to HuggingFace cache on host (optional, for faster model loading)
+# Mounted to /root/.cache/huggingface in container
 # HF_CACHE_DIR=/home/user/.cache/huggingface
 
 # Path to models directory on host (optional)
+# Mounted to /app/models in container
 # MODELS_DIR=/home/user/vibevoice-models
 
