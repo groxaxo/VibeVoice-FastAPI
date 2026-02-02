@@ -30,7 +30,11 @@ class Settings(BaseSettings):
         default=None,
         description="Attention implementation: flash_attention_2, sdpa, or eager (auto-detected if None)"
     )
-    
+    torch_compile: bool = Field(
+        default=False,
+        description="Enable torch.compile for optimized inference (20-50% speedup, but first request is slower due to compilation)"
+    )
+
     # Voice Configuration
     voices_dir: str = Field(
         default="/app/voices",  # Docker default; override with VOICES_DIR=demo/voices for local dev

@@ -105,7 +105,15 @@ class TTSService:
                 raise e
         
         self.model.eval()
-        
+
+        # Apply torch.compile for optimized inference
+        if self.settings.torch_compile:
+            try:
+                self.model = torch.compile(self.model, dynamic=True)
+                print("Model compiled with torch.compile(dynamic=True) for optimized inference")
+            except Exception as e:
+                print(f"torch.compile() failed: {e}, continuing without compilation")
+
         # Configure noise scheduler
         self.model.model.noise_scheduler = self.model.model.noise_scheduler.from_config(
             self.model.model.noise_scheduler.config,
