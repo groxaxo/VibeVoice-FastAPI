@@ -4,6 +4,9 @@ import torch
 import numpy as np
 from typing import Iterator, List, Optional, Union
 from transformers import set_seed
+import logging
+
+logger = logging.getLogger(__name__)
 
 from vibevoice.modular.configuration_vibevoice import VibeVoiceConfig
 from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForConditionalGenerationInference
@@ -44,41 +47,45 @@ class TTSService:
         attn_implementation = self.settings.get_attn_implementation()
         
         print(f"Using device: {self.device}, dtype: {self.dtype}, attention: {attn_implementation}")
-        
+
         # Load processor
         self.processor = VibeVoiceProcessor.from_pretrained(self.settings.vibevoice_model_path)
-        
-        # Load model
-        try:
-            if self.device == "mps":
-                # MPS doesn't support device_map
-                self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                    self.settings.vibevoice_model_path,
-                    torch_dtype=self.dtype,
-                    attn_implementation=attn_implementation,
-                    device_map=None,
-                )
-                self.model.to("mps")
-            elif self.device == "cuda":
-                self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                    self.settings.vibevoice_model_path,
-                    torch_dtype=self.dtype,
-                    device_map="cuda",
-                    attn_implementation=attn_implementation,
-                )
-            else:
-                self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                    self.settings.vibevoice_model_path,
-                    torch_dtype=self.dtype,
-                    device_map="cpu",
-                    attn_implementation=attn_implementation,
-                )
-        except Exception as e:
-            if attn_implementation == 'flash_attention_2':
-                print(f"Flash attention failed: {e}")
-                print("Falling back to SDPA attention")
-                attn_implementation = "sdpa"
-                
+
+        # Determine if we should load to CPU first for quantization
+        # This avoids loading full precision model to GPU then quantizing (wastes VRAM)
+        load_to_cpu_first = (
+            self.settings.vibevoice_quantization
+            and self.device == "cuda"
+        )
+
+        if load_to_cpu_first:
+            print("Loading model to CPU first for quantization (saves GPU memory)...")
+            # Use sdpa for CPU loading since flash_attention_2 requires CUDA
+            cpu_attn = "sdpa" if attn_implementation == "flash_attention_2" else attn_implementation
+            self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+                self.settings.vibevoice_model_path,
+                torch_dtype=self.dtype,
+                device_map="cpu",
+                attn_implementation=cpu_attn,
+                low_cpu_mem_usage=True,
+            )
+            self.model.eval()
+
+            # Apply quantization on CPU
+            self._apply_quantization()
+
+            # Now move to CUDA
+            print("Moving quantized model to CUDA...")
+            self.model = self.model.to("cuda")
+
+            # Log final VRAM usage
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                vram_final = torch.cuda.memory_allocated() / 1024**3
+                logger.info(f"Final VRAM usage after moving to GPU: {vram_final:.2f} GB")
+        else:
+            # Standard loading path (no quantization or non-CUDA device)
+            try:
                 if self.device == "mps":
                     self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
                         self.settings.vibevoice_model_path,
@@ -101,16 +108,45 @@ class TTSService:
                         device_map="cpu",
                         attn_implementation=attn_implementation,
                     )
-            else:
-                raise e
-        
-        self.model.eval()
+            except Exception as e:
+                if attn_implementation == 'flash_attention_2':
+                    print(f"Flash attention failed: {e}")
+                    print("Falling back to SDPA attention")
+                    attn_implementation = "sdpa"
+
+                    if self.device == "mps":
+                        self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+                            self.settings.vibevoice_model_path,
+                            torch_dtype=self.dtype,
+                            attn_implementation=attn_implementation,
+                            device_map=None,
+                        )
+                        self.model.to("mps")
+                    elif self.device == "cuda":
+                        self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+                            self.settings.vibevoice_model_path,
+                            torch_dtype=self.dtype,
+                            device_map="cuda",
+                            attn_implementation=attn_implementation,
+                        )
+                    else:
+                        self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+                            self.settings.vibevoice_model_path,
+                            torch_dtype=self.dtype,
+                            device_map="cpu",
+                            attn_implementation=attn_implementation,
+                        )
+                else:
+                    raise e
+
+            self.model.eval()
 
         # Apply torch.compile for optimized inference
         if self.settings.torch_compile:
             try:
-                self.model = torch.compile(self.model, dynamic=True)
-                print("Model compiled with torch.compile(dynamic=True) for optimized inference")
+                compile_mode = self.settings.torch_compile_mode
+                self.model = torch.compile(self.model, mode=compile_mode, dynamic=True)
+                print(f"Model compiled with torch.compile(mode='{compile_mode}', dynamic=True)")
             except Exception as e:
                 print(f"torch.compile() failed: {e}, continuing without compilation")
 
@@ -126,7 +162,75 @@ class TTSService:
         
         self._model_loaded = True
         print("Model loaded successfully")
-    
+
+    def _apply_quantization(self):
+        """Apply quantization to the model based on settings."""
+        quant_method = self.settings.vibevoice_quantization
+
+        if quant_method == "int8_torchao":
+            self._apply_torchao_quant(bits=8)
+        elif quant_method == "int4_torchao":
+            self._apply_torchao_quant(bits=4)
+        else:
+            logger.warning(f"Unknown quantization method: {quant_method}, skipping quantization")
+
+    def _apply_torchao_quant(self, bits: int = 8):
+        """
+        Apply torchao weight-only quantization to the language model.
+
+        This selectively quantizes only the LLM (Qwen2) decoder and lm_head,
+        keeping audio components (tokenizers, diffusion head, connectors) at full precision.
+
+        Args:
+            bits: 8 for INT8 (~40% VRAM reduction) or 4 for INT4 (~60% VRAM reduction, faster)
+        """
+        try:
+            from torchao.quantization import quantize_, int8_weight_only, int4_weight_only
+        except ImportError:
+            logger.error(
+                "torchao not installed. Install with: pip install torchao\n"
+                "Falling back to full precision."
+            )
+            return
+
+        # Select quantization function based on bits
+        if bits == 4:
+            quant_fn = int4_weight_only()
+            quant_name = "INT4"
+        else:
+            quant_fn = int8_weight_only()
+            quant_name = "INT8"
+
+        # Check if model is on CUDA (for memory logging)
+        model_on_cuda = next(self.model.parameters()).is_cuda
+
+        logger.info(f"Applying torchao {quant_name} weight-only quantization...")
+        if model_on_cuda:
+            logger.info("Model is on CUDA - quantizing in place")
+        else:
+            logger.info("Model is on CPU - quantizing before moving to GPU (saves VRAM)")
+
+        # Quantize only the language model (Qwen2 decoder) - this is the largest component
+        # The audio components (acoustic_tokenizer, semantic_tokenizer, prediction_head, connectors)
+        # are kept at full precision to maintain audio quality
+        try:
+            logger.info("Quantizing language_model (Qwen2 decoder)...")
+            quantize_(self.model.model.language_model, quant_fn)
+
+            logger.info("Quantizing lm_head...")
+            quantize_(self.model.lm_head, quant_fn)
+
+        except Exception as e:
+            logger.error(f"Failed to quantize model: {e}")
+            logger.info("Continuing with full precision model")
+            return
+
+        logger.info(f"{quant_name} quantization applied successfully")
+
+        # Force garbage collection
+        import gc
+        gc.collect()
+
     @property
     def is_loaded(self) -> bool:
         """Check if model is loaded."""

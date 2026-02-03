@@ -34,6 +34,14 @@ class Settings(BaseSettings):
         default=False,
         description="Enable torch.compile for optimized inference (20-50% speedup, but first request is slower due to compilation)"
     )
+    vibevoice_quantization: Optional[str] = Field(
+        default=None,
+        description="Quantization method: 'int8_torchao', 'int4_torchao', or None for full precision"
+    )
+    torch_compile_mode: str = Field(
+        default="default",
+        description="torch.compile mode: 'default', 'reduce-overhead', or 'max-autotune' (slower compile, faster inference)"
+    )
 
     # Voice Configuration
     voices_dir: str = Field(

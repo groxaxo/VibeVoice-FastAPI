@@ -15,6 +15,10 @@ VIBEVOICE_DEVICE=cuda
 # Number of diffusion inference steps
 VIBEVOICE_INFERENCE_STEPS=10
 
+# Quantization method to reduce VRAM usage (~40% reduction with int8_torchao)
+# Options: int8_torchao (requires torchao), or leave empty for full precision
+# VIBEVOICE_QUANTIZATION=int8_torchao
+
 # ============================================================
 # API Server Configuration
 # ============================================================
