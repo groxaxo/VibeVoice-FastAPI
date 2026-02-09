@@ -63,6 +63,7 @@ absl-py>=2.4.0
 gradio>=6.5.1
 aiortc>=1.14.0
 einops>=0.8.0
+langdetect>=1.0.9
 
 # ===============================================
 # Additional Dependencies (installed via PyTorch wheel)

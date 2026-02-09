@@ -21,4 +21,7 @@ sse-starlette>=1.8.0
 # HTTP client (for testing)
 httpx>=0.26.0
 
+# Language detection
+langdetect>=1.0.9
+
 

@@ -27,11 +27,13 @@ A production-ready FastAPI server that exposes the VibeVoice TTS model as an Ope
 
 - **Docker-First Deployment**: Production-ready Docker setup with GPU support (recommended)
 - **OpenAI-Compatible API**: Drop-in replacement for OpenAI's TTS API (`/v1/audio/speech`)
+- **Auto Language Detection**: Automatic language detection from input text with `language=auto` (supports 50+ languages)
 - **Unlimited Custom Voices**: Automatically load any voice from a directory - just drop audio files and restart
 - **Multi-Format Support**: MP3, WAV, FLAC, AAC, M4A, Opus, PCM
 - **Streaming Support**: Real-time audio streaming for long-form content
 - **Voice Management**: Dynamic voice loading, OpenAI voice mapping, and custom voice presets
 - **Production Ready**: Health checks, error handling, CORS support, and comprehensive logging
+- **Dependency Compatibility**: Automatic compatibility layer for different transformers versions
 
 ## ⚡ Ampere GPU Optimizations
 
@@ -90,6 +92,17 @@ uvicorn api.main:app --host 0.0.0.0 --port 8001
 ## 📋 Quick Start
 
 **Docker is the recommended deployment method** - it handles all dependencies, ensures consistent environments, and is production-ready.
+
+### Dependency Requirements
+
+The project requires specific versions of key dependencies:
+- `transformers==4.51.3` - Required for FlashAttentionKwargs support
+- `langdetect>=1.0.9` - For automatic language detection
+
+If you encounter import errors, ensure you have the correct transformers version:
+```bash
+pip install transformers==4.51.3
+```
 
 ### Docker Deployment (Recommended)
 
@@ -166,6 +179,40 @@ curl -X POST http://localhost:8001/v1/audio/speech \
   --output speech.mp3
 ```
 
+### Example: Auto-Detect Language
+
+```bash
+# Auto-detect language (default)
+curl -X POST http://localhost:8001/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "tts-1",
+    "input": "Buenos días, ¿cómo estás?",
+    "voice": "alloy",
+    "response_format": "mp3",
+    "language": "auto"
+  }' \
+  --output speech.mp3
+
+# Explicit language specification
+curl -X POST http://localhost:8001/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "tts-1",
+    "input": "Bonjour, comment allez-vous?",
+    "voice": "alloy",
+    "response_format": "mp3",
+    "language": "fr"
+  }' \
+  --output speech.mp3
+```
+
+**Language Detection Notes:**
+- Use `language="auto"` for automatic detection (default behavior)
+- For best accuracy with short text, use explicit language codes: `es`, `en`, `fr`, `de`, `it`, `pt`, `zh`, `ja`, `ko`, `ar`, `hi`, `ru`, and more
+- The detected language is returned in the `X-Detected-Language` response header
+- Very short text (less than 10 characters) may have lower detection accuracy
+
 ### Example: List Voices
 
 ```bash
@@ -232,6 +279,15 @@ API_CORS_ORIGINS=*
 DEFAULT_CFG_SCALE=1.3                            # 1.0-3.0
 DEFAULT_RESPONSE_FORMAT=mp3
 ```
+
+### API Request Parameters
+
+- `model`: Model to use (`tts-1` or `tts-1-hd`)
+- `input`: Text to convert to speech (max 4096 characters)
+- `voice`: Voice name (OpenAI voices: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer` or custom voices)
+- `language`: Language of input text (`"auto"` for auto-detection, or explicit code like `"es"`, `"en"`, `"fr"`, `"de"`, `"it"`, `"pt"`, `"zh"`, `"ja"`, `"ko"`, `"ar"`, `"hi"`, `"ru"`, and more)
+- `response_format`: Audio format (`mp3`, `opus`, `aac`, `flac`, `wav`, `pcm`, `m4a`)
+- `speed`: Speed of generated audio (0.25 to 4.0, default 1.0)
 
 ## 🐳 Docker Deployment
 
@@ -333,6 +389,33 @@ Models are automatically downloaded from HuggingFace on first use.
 
 This project maintains the original VibeVoice model codebase. Please refer to the original VibeVoice license for model usage terms.
 
+## 🔧 Dependency Fixes
+
+The project includes compatibility layers and fixes for common dependency issues:
+
+### Transformers Version Compatibility
+- Added compatibility layer for `FlashAttentionKwargs` import in both `modeling_vibevoice.py` and `modeling_vibevoice_inference.py`
+- Supports both transformers 4.51.3+ and older versions
+- Automatic fallback to stub implementation if `FlashAttentionKwargs` is not available
+
+### Language Detection Dependencies
+- Added `langdetect>=1.0.9` to `requirements-api.txt`
+- Created `api/utils/language_utils.py` with robust language detection for 50+ languages
+- Fallback to English if detection fails
+
+### Installation Command
+For a clean installation with all dependencies:
+```bash
+# Install core VibeVoice dependencies
+pip install -e .
+
+# Install API dependencies with language detection
+pip install -r requirements-api.txt
+
+# Ensure correct transformers version
+pip install transformers==4.51.3
+```
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
@@ -356,16 +439,35 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## ⚠️ Limitations
 
-- **Language Support**: Primarily English and Chinese. Other languages may produce unexpected results.
+- **Language Support**: Primarily English and Chinese. Other languages may produce unexpected results. Auto-detection is available for many languages via `language="auto"`.
 - **Non-Speech Audio**: The model focuses on speech synthesis and may generate background music or sounds spontaneously.
 - **Commercial Use**: This model is intended for research and development. Test thoroughly before production use.
 
 ## 🆘 Troubleshooting
 
+### Dependency Issues
+
+**Transformers Import Error:**
+If you see `ImportError: cannot import name 'FlashAttentionKwargs'`, install the correct transformers version:
+```bash
+pip install transformers==4.51.3
+```
+
+**Package Conflicts:**
+If you have package conflicts with chatterbox-tts or other packages:
+```bash
+# Uninstall conflicting packages
+pip uninstall chatterbox-tts
+
+# Reinstall with correct versions
+pip install transformers==4.51.3 langdetect>=1.0.9
+```
+
 ### Server won't start
 - Check GPU availability: `nvidia-smi`
 - Verify Python version: `python3 --version` (should be 3.12)
-- Check dependencies: `pip list | grep torch`
+- Check dependencies: `pip list | grep transformers transformers` (should be 4.51.3)
+- Check torch version: `pip list | grep torch`
 
 ### Out of memory errors
 - Use smaller model: `VIBEVOICE_MODEL_PATH=microsoft/VibeVoice-1.5B`
@@ -376,6 +478,11 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - Verify `VOICES_DIR` path in `.env`
 - Check file permissions
 - Ensure audio files are in supported formats
+
+### Language detection issues
+- Very short text (<10 characters) may have lower accuracy
+- For best results with short text, use explicit language parameter
+- Use language codes like `es`, `en`, `fr`, `de`, `it`, `pt`, `zh`, `ja`, `ko`, `ar`, `hi`, `ru`
 
 For more help, see the [API README](API_README.md) or open an issue.
 

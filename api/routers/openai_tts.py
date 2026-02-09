@@ -10,6 +10,7 @@ from api.services.tts_service import TTSService
 from api.services.voice_manager import VoiceManager
 from api.utils.audio_utils import audio_to_bytes, get_content_type, get_audio_duration
 from api.utils.streaming import create_streaming_response
+from api.utils.language_utils import detect_language
 from api.config import settings
 
 logger = logging.getLogger(__name__)
@@ -40,32 +41,40 @@ def get_voice_manager() -> VoiceManager:
 async def create_speech(
     request: OpenAITTSRequest,
     tts: TTSService = Depends(get_tts_service),
-    voices: VoiceManager = Depends(get_voice_manager)
+    voices: VoiceManager = Depends(get_voice_manager),
 ):
     """
     Generate speech from text using OpenAI-compatible API.
-    
+
     This endpoint mimics the OpenAI TTS API for compatibility with existing clients.
+    Supports auto-detection of input language when language='auto' or not specified.
     """
     try:
+        # Detect or use specified language
+        if request.language == "auto" or request.language is None:
+            detected_language = detect_language(request.input)
+        else:
+            detected_language = request.language
         # Try loading as OpenAI voice first, then as direct VibeVoice preset
         voice_audio = voices.load_voice_audio(request.voice, is_openai_voice=True)
-        
+
         # If not found as OpenAI voice, try as direct VibeVoice preset name
         if voice_audio is None:
             voice_audio = voices.load_voice_audio(request.voice, is_openai_voice=False)
-        
+
         if voice_audio is None:
-            available_openai = ', '.join(voices.OPENAI_VOICE_MAPPING.keys())
-            available_presets = ', '.join(sorted(voices.voice_presets.keys()))
+            available_openai = ", ".join(voices.OPENAI_VOICE_MAPPING.keys())
+            available_presets = ", ".join(sorted(voices.voice_presets.keys()))
             raise HTTPException(
                 status_code=400,
-                detail=f"Voice '{request.voice}' not found. OpenAI voices: {available_openai}. VibeVoice presets: {available_presets}"
+                detail=f"Voice '{request.voice}' not found. OpenAI voices: {available_openai}. VibeVoice presets: {available_presets}",
             )
-        
+
         # Format text as single-speaker script
-        formatted_script = tts.format_script_for_single_speaker(request.input, speaker_id=0)
-        
+        formatted_script = tts.format_script_for_single_speaker(
+            request.input, speaker_id=0
+        )
+
         # Generate speech with timing
         # Note: OpenAI API doesn't support streaming in the same way, but we can use chunked transfer
         start_time = time.time()
@@ -73,82 +82,80 @@ async def create_speech(
             text=formatted_script,
             voice_samples=[voice_audio],
             cfg_scale=settings.default_cfg_scale,
-            stream=False  # For OpenAI compatibility, generate all at once
+            stream=False,  # For OpenAI compatibility, generate all at once
         )
         generation_time = time.time() - start_time
-        
+
         # Calculate audio duration
         audio_duration = get_audio_duration(audio, sample_rate=24000)
-        
+
         # Log generation details at INFO level
-        text_preview = request.input[:100] + "..." if len(request.input) > 100 else request.input
+        text_preview = (
+            request.input[:100] + "..." if len(request.input) > 100 else request.input
+        )
+        logger.info(
+            f"Generated speech - Text: {text_preview} | Voice: {request.voice} | "
+            f"Model: {request.model} ({settings.vibevoice_model_path}) | "
+            f"Language: {detected_language} | "
+            f"CFG: {settings.default_cfg_scale} | Audio Duration: {audio_duration:.2f}s | Generation Time: {generation_time:.2f}s"
+        )
         logger.info(
             f"Generated speech - Text: {text_preview} | Voice: {request.voice} | "
             f"Model: {request.model} ({settings.vibevoice_model_path}) | "
             f"CFG: {settings.default_cfg_scale} | Audio Duration: {audio_duration:.2f}s | Generation Time: {generation_time:.2f}s"
         )
-        
+
         # Convert to requested format
         audio_bytes = audio_to_bytes(
-            audio,
-            sample_rate=24000,
-            format=request.response_format
+            audio, sample_rate=24000, format=request.response_format
         )
-        
+
         # Return audio response
         return Response(
             content=audio_bytes,
             media_type=get_content_type(request.response_format),
             headers={
-                "Content-Disposition": f"attachment; filename=speech.{request.response_format}"
-            }
+                "Content-Disposition": f"attachment; filename=speech.{request.response_format}",
+                "X-Detected-Language": detected_language,
+            },
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error generating speech: {e}")
         import traceback
+
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/voices")
-async def list_voices(
-    voices: VoiceManager = Depends(get_voice_manager)
-):
+async def list_voices(voices: VoiceManager = Depends(get_voice_manager)):
     """
     List all available voices in OpenAI-compatible format.
-    
+
     Returns OpenAI standard voices (if their mapped presets exist) plus all custom voices.
     """
     try:
         voice_list = []
-        
+
         # Add OpenAI standard voices (if their mapped presets exist)
         for openai_name, vibevoice_preset in voices.OPENAI_VOICE_MAPPING.items():
             if vibevoice_preset in voices.voice_presets:
-                voice_list.append({
-                    "id": openai_name,
-                    "object": "voice",
-                    "name": openai_name
-                })
-        
+                voice_list.append(
+                    {"id": openai_name, "object": "voice", "name": openai_name}
+                )
+
         # Add all custom voices from VOICES_DIR
         all_voices = voices.list_available_voices()
         for voice in all_voices:
             # Skip if already added as OpenAI voice
             if voice["name"] not in voices.OPENAI_VOICE_MAPPING.values():
-                voice_list.append({
-                    "id": voice["name"],
-                    "object": "voice",
-                    "name": voice["name"]
-                })
-        
-        return {
-            "object": "list",
-            "data": voice_list
-        }
+                voice_list.append(
+                    {"id": voice["name"], "object": "voice", "name": voice["name"]}
+                )
+
+        return {"object": "list", "data": voice_list}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
