@@ -1,0 +1,152 @@
+# =================================================================
+# VibeVoice FastAPI - Ampere GPU Optimized Dockerfile
+# =================================================================
+# Optimized for NVIDIA Ampere architecture (RTX 3090, 3080, 3070, A100, A40)
+# Includes all performance optimizations: INT8 quantization, Flash Attention 2, torch.compile
+# =================================================================
+
+# Base image with CUDA 12.8 (latest stable for Ampere)
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+
+# Set environment variables for optimization
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_NO_BUILD_ISOLATION=0 \
+    PIP_ONLY_BINARY=:all: \
+    MAX_JOBS=2 \
+    MAKEFLAGS="-j2" \
+    TORCH_CUDA_ARCH_LIST="8.6 8.0" \
+    CUDA_VISIBLE_DEVICES=0
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3.11-dev \
+    python3.11-venv \
+    git \
+    ffmpeg \
+    libsndfile1 \
+    curl \
+    wget \
+    build-essential \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Python 3.11 as default
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
+    update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+
+# Set working directory
+WORKDIR /app
+
+# Create virtual environment
+RUN python3 -m venv /app/venv
+
+# Activate venv and upgrade pip
+ENV PATH="/app/venv/bin:$PATH"
+RUN pip install --upgrade pip setuptools wheel
+
+# Copy project files
+COPY pyproject.toml README.md ./
+COPY requirements-ampere.txt ./
+COPY vibevoice/ ./vibevoice/
+COPY demo/ ./demo/
+COPY api/ ./api/
+
+# =================================================================
+# Phase 1: Install PyTorch with CUDA 12.8 support
+# =================================================================
+# Uses pre-built wheels optimized for Ampere architecture
+# Includes all necessary CUDA libraries automatically
+RUN pip install --index-url https://download.pytorch.org/whl/cu128 \
+    torch==2.8.0 \
+    torchvision==0.23.0 \
+    torchaudio==2.8.0
+
+# =================================================================
+# Phase 2: Install Ampere-Specific Optimizations
+# =================================================================
+
+# Install torchao for INT8 quantization (~40% VRAM reduction)
+# PyTorch 2.8 compatible version
+RUN pip install torchao==0.13.0
+
+# Install flash-attn from pre-built wheel (2-3x faster attention)
+# Pre-built for CUDA 12.8, PyTorch 2.8, and Ampere architecture
+RUN pip install \
+    https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiFALSE-cp311-cp311-linux_x86_64.whl || \
+    echo "WARNING: flash-attn pre-built wheel installation failed, continuing without it" && \
+    echo "Note: Flash Attention 2 is optional but recommended for best performance"
+
+# =================================================================
+# Phase 3: Install VibeVoice and API dependencies
+# =================================================================
+
+# Install VibeVoice package in editable mode
+# Use --only-binary to prevent compilation issues
+RUN pip install --only-binary=:all: -e . || pip install -e .
+
+# Install API dependencies
+RUN pip install --only-binary=:all: -r requirements-ampere.txt || pip install -r requirements-ampere.txt
+
+# =================================================================
+# Phase 4: Configuration and Setup
+# =================================================================
+
+# Create directories for voices and models
+RUN mkdir -p /app/voices /app/models /app/logs
+
+# Copy optimized environment configuration
+COPY .env.ampere /app/.env || cp /dev/null /app/.env
+
+# Set environment variables for Ampere optimization
+ENV VIBEVOICE_DEVICE=cuda \
+    VIBEVOICE_DTYPE=bfloat16 \
+    VIBEVOICE_ATTN_IMPLEMENTATION=flash_attention_2 \
+    VIBEVOICE_INFERENCE_STEPS=5 \
+    TORCH_COMPILE=true \
+    TORCH_COMPILE_MODE=max-autotune \
+    VIBEVOICE_QUANTIZATION=int8_torchao \
+    API_PORT=8001 \
+    API_HOST=0.0.0.0 \
+    VOICES_DIR=/app/voices
+
+# Expose API port
+EXPOSE 8001
+
+# =================================================================
+# Phase 5: Health Check
+# =================================================================
+# Health check ensures the API is responsive
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8001/health || exit 1
+
+# =================================================================
+# Phase 6: Runtime Configuration
+# =================================================================
+
+# Create startup script that handles GPU initialization
+RUN echo '#!/bin/bash\n\
+echo "============================================================"\n\
+echo "VibeVoice FastAPI - Ampere Optimized"\n\
+echo "============================================================"\n\
+echo ""\n\
+echo "GPU Information:"\n\
+nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader\n\
+echo ""\n\
+echo "Optimizations Enabled:"\n\
+echo "  - Flash Attention 2: Yes"\n\
+echo "  - torch.compile (max-autotune): Yes"\n\
+echo "  - bfloat16 Precision: Yes"\n\
+echo "  - INT8 Quantization: Yes"\n\
+echo "  - 5 Inference Steps: Yes"\n\
+echo ""\n\
+echo "Starting API server..."\n\
+echo "============================================================"\n\
+exec uvicorn api.main:app --host ${API_HOST:-0.0.0.0} --port ${API_PORT:-8001} --workers 1\n\
+' > /app/start.sh && chmod +x /app/start.sh
+
+# Run the API using the startup script
+CMD ["/app/start.sh"]

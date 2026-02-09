@@ -1,0 +1,201 @@
+version: '3.8'
+
+# =================================================================
+# VibeVoice FastAPI - Ampere GPU Optimized Docker Compose
+# =================================================================
+# Optimized for NVIDIA Ampere architecture (RTX 3090, 3080, 3070, A100, A40)
+# Includes all performance optimizations for lowest runtime
+# =================================================================
+
+services:
+  vibevoice:
+    # Build using Ampere-optimized Dockerfile
+    build:
+      context: .
+      dockerfile: Dockerfile.ampere
+
+    image: vibevoice-ampere:latest
+    container_name: vibevoice-server
+
+    # Port mapping
+    ports:
+      - "8001:8001"
+
+    # Volume mounts
+    volumes:
+      # Mount voices directory (read-only for security)
+      - ./demo/voices:/app/voices:ro
+      # Mount logs directory
+      - ./vibevoice.log:/app/vibevoice.log
+      # Optional: Mount HuggingFace cache for faster reloads
+      - ~/.cache/huggingface:/root/.cache/huggingface
+
+    # Ampere-optimized environment variables
+    environment:
+      # ============================================================
+      # Model Configuration
+      # ============================================================
+      - VIBEVOICE_MODEL_PATH=aoi-ot/VibeVoice-Large
+
+      # Device: CUDA (required for GPU acceleration)
+      - VIBEVOICE_DEVICE=cuda
+
+      # ============================================================
+      # Ampere-Specific Optimizations
+      # ============================================================
+
+      # bfloat16: Native Ampere support, 2x faster than float32
+      - VIBEVOICE_DTYPE=bfloat16
+
+      # flash_attention_2: 2-3x faster attention layers
+      - VIBEVOICE_ATTN_IMPLEMENTATION=flash_attention_2
+
+      # 5 inference steps: 30% faster, minor quality loss
+      - VIBEVOICE_INFERENCE_STEPS=5
+
+      # torch.compile: 20-50% speedup after compilation
+      - TORCH_COMPILE=true
+
+      # max-autotune: Fastest inference, slower compile
+      - TORCH_COMPILE_MODE=max-autotune
+
+      # INT8 quantization: ~40% VRAM reduction
+      - VIBEVOICE_QUANTIZATION=int8_torchao
+
+      # ============================================================
+      # API Configuration
+      # ============================================================
+      - API_HOST=0.0.0.0
+      - API_PORT=8001
+      - VOICES_DIR=/app/voices
+
+      # Optional: Specify which GPU to use (for multi-GPU systems)
+      # - CUDA_VISIBLE_DEVICES=0
+
+      # ============================================================
+      # Generation Defaults
+      # ============================================================
+      - DEFAULT_CFG_SCALE=1.8
+      - DEFAULT_RESPONSE_FORMAT=mp3
+      - MAX_GENERATION_LENGTH=5400
+      - DEFAULT_DO_SAMPLE=false
+      - DEFAULT_TEMPERATURE=1.0
+      - DEFAULT_TOP_P=1.0
+      - DEFAULT_TOP_K=50
+
+      # ============================================================
+      # Logging
+      # ============================================================
+      - LOG_LEVEL=INFO
+
+    # GPU reservation
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          cpus: '4.0'
+          memory: 32G
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+# =================================================================
+# Alternative: Multi-GPU Deployment
+# =================================================================
+# Uncomment below for multi-GPU deployment (3x RTX 3090)
+
+# services:
+#   vibevoice-gpu0:
+#     build:
+#       context: .
+#       dockerfile: Dockerfile.ampere
+#     image: vibevoice-ampere:latest
+#     container_name: vibevoice-gpu0
+#     ports:
+#       - "8001:8001"
+#     volumes:
+#       - ./demo/voices:/app/voices:ro
+#     environment:
+#       - CUDA_VISIBLE_DEVICES=0
+#       - VIBEVOICE_MODEL_PATH=aoi-ot/VibeVoice-Large
+#       - VIBEVOICE_DEVICE=cuda
+#       - VIBEVOICE_DTYPE=bfloat16
+#       - VIBEVOICE_ATTN_IMPLEMENTATION=flash_attention_2
+#       - VIBEVOICE_INFERENCE_STEPS=5
+#       - TORCH_COMPILE=true
+#       - VIBEVOICE_QUANTIZATION=int8_torchao
+#       - API_PORT=8001
+#     deploy:
+#       resources:
+#         reservations:
+#           devices:
+#             - driver: nvidia
+#               device_ids: ['0']
+#               capabilities: [gpu]
+#     restart: unless-stopped
+#
+#   vibevoice-gpu1:
+#     extends: vibevoice-gpu0
+#     container_name: vibevoice-gpu1
+#     ports:
+#       - "8002:8001"
+#     environment:
+#       - CUDA_VISIBLE_DEVICES=1
+#       - API_PORT=8001
+#     deploy:
+#       resources:
+#         reservations:
+#           devices:
+#             - driver: nvidia
+#               device_ids: ['1']
+#               capabilities: [gpu]
+#
+#   vibevoice-gpu2:
+#     extends: vibevoice-gpu0
+#     container_name: vibevoice-gpu2
+#     ports:
+#       - "8003:8001"
+#     environment:
+#       - CUDA_VISIBLE_DEVICES=2
+#       - API_PORT=8001
+#     deploy:
+#       resources:
+#         reservations:
+#           devices:
+#             - driver: nvidia
+#               device_ids: ['2']
+#               capabilities: [gpu]
+#
+#   # Load balancer (nginx)
+#   nginx:
+#     image: nginx:alpine
+#     container_name: vibevoice-lb
+#     ports:
+#       - "8000:8000"
+#     volumes:
+#       - ./nginx.conf:/etc/nginx/nginx.conf
+#     depends_on:
+#       - vibevoice-gpu0
+#       - vibevoice-gpu1
+#       - vibevoice-gpu2
+#     restart: unless-stopped

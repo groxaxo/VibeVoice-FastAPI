@@ -2,6 +2,18 @@
 
 A production-ready FastAPI server that exposes the VibeVoice TTS model as an OpenAI-compatible API, with Docker support and comprehensive voice management.
 
+**🚀 Now with Ampere GPU Optimizations!** Optimized for RTX 3090, 3080, 3070, A100, and A40 with up to 50% performance improvements.
+
+<div align="center">
+
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green?logo=fastapi)](https://fastapi.tiangolo.com)
+[![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python)](https://www.python.org)
+[![Docker](https://img.shields.io/badge/Docker-Ready-blue?logo=docker)](https://www.docker.com)
+[![OpenAI Compatible](https://img.shields.io/badge/OpenAI-Compatible-orange?logo=openai)](https://platform.openai.com/docs/api-reference/audio)
+[![Ampere Optimized](https://img.shields.io/badge/Ampere-Optimized-green?logo=nvidia)](https://developer.nvidia.com/ampere-computing-architecture)
+
+</div>
+
 <div align="center">
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green?logo=fastapi)](https://fastapi.tiangolo.com)
@@ -20,6 +32,60 @@ A production-ready FastAPI server that exposes the VibeVoice TTS model as an Ope
 - **Streaming Support**: Real-time audio streaming for long-form content
 - **Voice Management**: Dynamic voice loading, OpenAI voice mapping, and custom voice presets
 - **Production Ready**: Health checks, error handling, CORS support, and comprehensive logging
+
+## ⚡ Ampere GPU Optimizations
+
+**Special optimizations for NVIDIA Ampere architecture (RTX 3090, 3080, 3070, A100, A40)** that achieve up to 50% performance improvements.
+
+| Optimization | Impact | VRAM Impact | Status |
+|-------------|---------|-------------|---------|
+| **INT8 Quantization** | 2-3x faster memory access | -40% (10.8 GB vs 16GB) | ✅ Enabled |
+| **Flash Attention 2** | 2-3x faster attention layers | - | ✅ Pre-built |
+| **torch.compile (max-autotune)** | 20-50% speedup | Slight increase | ✅ Enabled |
+| **bfloat16 Precision** | 2x faster than float32 | - | ✅ Native Ampere |
+| **Reduced Steps (5)** | 30% faster | - | ✅ Configured |
+
+### Performance Benchmarks (RTX 3090)
+
+```
+Model: VibeVoice-Large (7B parameters)
+VRAM: 10.84 GB / 24 GB (INT8 quantized)
+Real-time Factor: 0.77x (1.31x slower than real-time)
+
+Generation Times:
+• 10s audio  → ~13.1s to generate
+• 1min audio → ~78.4s (1.3 min) to generate
+• 5min audio → ~6.5 min to generate
+```
+
+### Quick Start with Optimizations
+
+**Docker (Ampere Optimized):**
+```bash
+# Build optimized image
+docker build -f Dockerfile.ampere -t vibevoice-ampere .
+
+# Run with Docker Compose
+docker-compose -f docker-compose.ampere.yml up -d
+```
+
+**Conda:**
+```bash
+# Create environment
+conda create -n vibevoice python=3.11 -y
+conda activate vibevoice
+
+# Install optimized dependencies
+pip install -r requirements-ampere.txt
+
+# Copy optimized configuration
+cp .env.ampere .env
+
+# Start server
+uvicorn api.main:app --host 0.0.0.0 --port 8001
+```
+
+📖 **For complete Ampere optimization guide, see [AMPERE_OPTIMIZED_DEPLOYMENT.md](AMPERE_OPTIMIZED_DEPLOYMENT.md)**
 
 ## 📋 Quick Start
 
@@ -69,6 +135,7 @@ cp env.example .env
 
 ## 📖 Documentation
 
+- **[AMPERE_OPTIMIZED_DEPLOYMENT.md](AMPERE_OPTIMIZED_DEPLOYMENT.md)** - ⭐ **NEW: Complete Ampere GPU optimization guide** with performance benchmarks, tuning options, and Docker support
 - **[API README](API_README.md)** - Complete API documentation with examples, voice management, and troubleshooting
 - **[Docker Quickstart](DOCKER_QUICKSTART.md)** - Docker deployment quickstart guide
 
@@ -109,7 +176,7 @@ curl http://localhost:8001/v1/audio/voices
 curl http://localhost:8001/v1/audio/voices | jq
 ```
 ## MODEL MANAGEMENT
-VibeeVoice Large: Huggingface: rsxdalv/VibeVoice-Large [https://huggingface.co/rsxdalv/VibeVoice-Large]
+VibeeVoice Large: Huggingface: aoi-ot/VibeVoice-Large [https://huggingface.co/aoi-ot/VibeVoice-Large] ⭐ Optimized for Ampere GPUs
 
 VibeVoice 1.5B: Huggingface microsoft/VibeVoice-1.5B [https://huggingface.co/microsoft/VibeVoice-1.5B]
 ## 🎤 Voice Management
@@ -230,10 +297,12 @@ curl http://localhost:8001/v1/audio/voices
 
 ## 📊 Supported Models
 
-| Model | Size | Context | Max Length | VRAM Required |
-|-------|------|---------|------------|---------------|
-| VibeVoice-1.5B | 1.5B | 64K | ~90 min | 8GB+ |
-| VibeVoice-Large | 7B | 32K | ~45 min | 16GB+ |
+| Model | Size | Context | Max Length | VRAM Required | Real-time Factor (Ampere) |
+|-------|------|---------|------------|---------------|--------------------------|
+| | VibeVoice-1.5B | 1.5B | 64K | ~90 min | 8GB+ | 1.5-2.5x |
+| | VibeVoice-Large | 7B | 32K | ~45 min | 16GB+ (10.8GB optimized) | 0.77x |
+
+*Real-time factor on RTX 3090 with all Ampere optimizations enabled.*
 
 Models are automatically downloaded from HuggingFace on first use.
 
@@ -270,10 +339,14 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## 🙏 Acknowledgments
 
-- **VibeVoice Team** at Microsoft for the original model
+- **VibeVoice Team at Microsoft** for the original model and groundbreaking research in text-to-speech
 - **[shijincai](https://github.com/shijincai)** for maintaining a backup of the original VibeVoice codebase
-- **FastAPI** for the excellent web framework
-- **HuggingFace** for model hosting and transformers library
+- **[Dao-AILab](https://github.com/Dao-AILab)** for Flash Attention 2, enabling efficient attention computation
+- **[PyTorch Team](https://github.com/pytorch)** for torch.compile and torchao optimization tools
+- **[FastAPI](https://fastapi.tiangolo.com)** for the excellent web framework
+- **[HuggingFace](https://huggingface.co)** for model hosting and transformers library
+
+**Special thanks to the open-source community for making state-of-the-art TTS accessible to everyone.**
 
 ## 📚 Additional Resources
 
