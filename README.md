@@ -34,6 +34,7 @@ A production-ready FastAPI server that exposes the VibeVoice TTS model as an Ope
 - **Voice Management**: Dynamic voice loading, OpenAI voice mapping, and custom voice presets
 - **Production Ready**: Health checks, error handling, CORS support, and comprehensive logging
 - **Dependency Compatibility**: Automatic compatibility layer for different transformers versions
+- **Smart GPU Autodetection**: Automatically selects the GPU with the most free memory to prevent OOM errors
 
 ## ⚡ Ampere GPU Optimizations
 
@@ -444,6 +445,19 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - **Commercial Use**: This model is intended for research and development. Test thoroughly before production use.
 
 ## 🆘 Troubleshooting
+
+### Common Deployment Issues
+
+**GPU "Out of Memory" (OOM):**
+- The system now includes **Smart GPU Autodetection**. If you have multiple GPUs, the API will automatically select the one with the most free memory.
+- To force a specific GPU, set `VIBEVOICE_DEVICE=cuda:0` (or `cuda:1`, etc.) in your `.env` file instead of just `cuda`.
+- Use a smaller model: `VIBEVOICE_MODEL_PATH=microsoft/VibeVoice-1.5B`
+- Use quantization: `VIBEVOICE_QUANTIZATION=int8_torchao`
+
+**Volume Mounting Errors:**
+- Ensure your `.env` file has the correct relative path for `VOICES_DIR`.
+- Correct: `VOICES_DIR=./demo/voices`
+- Incorrect: `VOICES_DIR=demo/voices` (Docker treats this as a named volume)
 
 ### Dependency Issues
 
