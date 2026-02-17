@@ -10,23 +10,22 @@ services:
     
     # GPU support
     # Option 1: Use specific GPU (default - GPU 0)
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ['3']  # Use GPU 0 only
-              # device_ids: ['0', '1']  # Use GPUs 0 and 1
-              capabilities: [gpu]
-    
-    # Option 2: Use all GPUs - uncomment and modify as needed
     # deploy:
     #   resources:
     #     reservations:
     #       devices:
     #         - driver: nvidia
-    #           count: all
+    #           device_ids: ['0']  # Use GPU 0 only
     #           capabilities: [gpu]
+    
+    # Option 2: Use all GPUs - uncomment and modify as needed
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     
     # Port mapping
     ports:

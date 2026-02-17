@@ -54,7 +54,7 @@ LOG_LEVEL=INFO
 # Set these to absolute paths on your host system
 
 # Path to voices directory on host (mounted to /app/voices in container)
-VOICES_DIR=demo/voices
+VOICES_DIR=./demo/voices
 
 # OpenAI voice name to VibeVoice preset mapping (JSON format)
 # Maps OpenAI-compatible voice names (alloy, echo, fable, onyx, nova, shimmer) to your voice preset files

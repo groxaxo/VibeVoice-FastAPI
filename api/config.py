@@ -8,145 +8,164 @@ from pydantic import Field
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
-    
+
     # Model Configuration
     vibevoice_model_path: str = Field(
         default="microsoft/VibeVoice-1.5B",
-        description="Path to VibeVoice model weights (local path or HuggingFace model ID)"
+        description="Path to VibeVoice model weights (local path or HuggingFace model ID)",
     )
     vibevoice_device: str = Field(
-        default="cuda",
-        description="Device for inference: cuda, cpu, or mps"
+        default="cuda", description="Device for inference: cuda, cpu, or mps"
     )
     vibevoice_inference_steps: int = Field(
-        default=10,
-        description="Number of diffusion inference steps"
+        default=10, description="Number of diffusion inference steps"
     )
     vibevoice_dtype: Optional[str] = Field(
         default=None,
-        description="Model dtype: bfloat16, float16, or float32 (auto-detected if None)"
+        description="Model dtype: bfloat16, float16, or float32 (auto-detected if None)",
     )
     vibevoice_attn_implementation: Optional[str] = Field(
         default=None,
-        description="Attention implementation: flash_attention_2, sdpa, or eager (auto-detected if None)"
+        description="Attention implementation: flash_attention_2, sdpa, or eager (auto-detected if None)",
     )
     torch_compile: bool = Field(
         default=False,
-        description="Enable torch.compile for optimized inference (20-50% speedup, but first request is slower due to compilation)"
+        description="Enable torch.compile for optimized inference (20-50% speedup, but first request is slower due to compilation)",
     )
     vibevoice_quantization: Optional[str] = Field(
         default=None,
-        description="Quantization method: 'int8_torchao', 'int4_torchao', or None for full precision"
+        description="Quantization method: 'int8_torchao', 'int4_torchao', 'nf4_bnb', or None for full precision",
     )
     torch_compile_mode: str = Field(
         default="default",
-        description="torch.compile mode: 'default', 'reduce-overhead', or 'max-autotune' (slower compile, faster inference)"
+        description="torch.compile mode: 'default', 'reduce-overhead', or 'max-autotune' (slower compile, faster inference)",
     )
 
     # Voice Configuration
     voices_dir: str = Field(
         default="/app/voices",  # Docker default; override with VOICES_DIR=demo/voices for local dev
-        description="Directory containing voice preset audio files"
+        description="Directory containing voice preset audio files",
     )
     openai_voice_mapping: str = Field(
-        default='{"alloy": "en-Alice_woman", "echo": "en-Carter_man", "fable": "en-Maya_woman", "onyx": "en-Frank_man", "nova": "en-Mary_woman_bgm", "shimmer": "en-Alice_woman"}',
-        description="JSON mapping of OpenAI voice names to VibeVoice preset names"
+        default='{"alloy": "es-Argentinian_female", "echo": "es-Argentinian_female", "fable": "es-Argentinian_female", "onyx": "es-Argentinian_female", "nova": "es-Argentinian_female", "shimmer": "es-Argentinian_female"}',
+        description="JSON mapping of OpenAI voice names to VibeVoice preset names",
     )
-    
+
     # API Server Configuration
-    api_host: str = Field(
-        default="0.0.0.0",
-        description="API server host"
-    )
-    api_port: int = Field(
-        default=8001,
-        description="API server port"
-    )
+    api_host: str = Field(default="0.0.0.0", description="API server host")
+    api_port: int = Field(default=8001, description="API server port")
     api_workers: int = Field(
-        default=1,
-        description="Number of API workers (keep at 1 for model loading)"
+        default=1, description="Number of API workers (keep at 1 for model loading)"
     )
     api_cors_origins: str = Field(
-        default="*",
-        description="CORS allowed origins (comma-separated)"
+        default="*", description="CORS allowed origins (comma-separated)"
     )
-    
+
     # Generation Defaults
     default_cfg_scale: float = Field(
         default=1.3,
-        description="Default CFG scale for generation (1.0-3.0, higher = more faithful to prompt)"
+        description="Default CFG scale for generation (1.0-3.0, higher = more faithful to prompt)",
     )
     default_response_format: str = Field(
-        default="mp3",
-        description="Default audio response format"
+        default="mp3", description="Default audio response format"
     )
     max_generation_length: int = Field(
         default=90 * 60,  # 90 minutes in seconds
-        description="Maximum generation length in seconds"
+        description="Maximum generation length in seconds",
     )
     default_do_sample: bool = Field(
         default=False,
-        description="Whether to use sampling for text generation (False = greedy decoding)"
+        description="Whether to use sampling for text generation (False = greedy decoding)",
     )
     default_temperature: float = Field(
         default=1.0,
-        description="Temperature for sampling (only used if do_sample=True)"
+        description="Temperature for sampling (only used if do_sample=True)",
     )
     default_top_p: float = Field(
         default=1.0,
-        description="Top-p (nucleus) sampling (only used if do_sample=True)"
+        description="Top-p (nucleus) sampling (only used if do_sample=True)",
     )
     default_top_k: int = Field(
-        default=50,
-        description="Top-k sampling (only used if do_sample=True)"
+        default=50, description="Top-k sampling (only used if do_sample=True)"
     )
     default_repetition_penalty: float = Field(
-        default=1.0,
-        description="Repetition penalty (1.0 = no penalty)"
+        default=1.0, description="Repetition penalty (1.0 = no penalty)"
     )
-    
+
     # Logging
     log_level: str = Field(
         default="INFO",
-        description="Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL (case-insensitive)"
+        description="Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL (case-insensitive)",
     )
-    
+
     @property
     def normalized_log_level(self) -> str:
         """Get log level normalized to uppercase for logging module."""
         return self.log_level.upper()
-    
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
-        
+
     @property
     def cors_origins_list(self) -> list[str]:
         """Parse CORS origins from comma-separated string."""
         if self.api_cors_origins == "*":
             return ["*"]
         return [origin.strip() for origin in self.api_cors_origins.split(",")]
-    
+
     def get_device(self) -> str:
-        """Get the appropriate device, checking availability."""
+        """Get the appropriate device, checking availability and free memory."""
         import torch
-        
-        if self.vibevoice_device == "cuda" and not torch.cuda.is_available():
-            print("WARNING: CUDA requested but not available, falling back to CPU")
-            return "cpu"
+
+        if self.vibevoice_device.startswith("cuda"):
+            if not torch.cuda.is_available():
+                print("WARNING: CUDA requested but not available, falling back to CPU")
+                return "cpu"
+
+            # If user just said "cuda" (no index), try to find the best one
+            if self.vibevoice_device == "cuda":
+                device_count = torch.cuda.device_count()
+                if device_count > 1:
+                    print(f"Detecting best GPU among {device_count} devices...")
+                    best_device = 0
+                    max_free_memory = 0
+
+                    for i in range(device_count):
+                        try:
+                            # free_memory, total_memory = torch.cuda.mem_get_info(i)
+                            # mem_get_info returns (free, total) in bytes
+                            free_mem, total_mem = torch.cuda.mem_get_info(i)
+                            print(
+                                f"GPU {i}: {free_mem / 1024**3:.2f} GB free / {total_mem / 1024**3:.2f} GB total"
+                            )
+
+                            if free_mem > max_free_memory:
+                                max_free_memory = free_mem
+                                best_device = i
+                        except Exception as e:
+                            print(f"Error checking GPU {i}: {e}")
+
+                    print(
+                        f"Selected GPU {best_device} with {max_free_memory / 1024**3:.2f} GB free memory"
+                    )
+                    return f"cuda:{best_device}"
+
+            return self.vibevoice_device
+
         elif self.vibevoice_device == "mps" and not torch.backends.mps.is_available():
             print("WARNING: MPS requested but not available, falling back to CPU")
             return "cpu"
         return self.vibevoice_device
-    
+
     def get_dtype(self):
         """Get the appropriate dtype for the device."""
         import torch
-        
+
         if self.vibevoice_dtype:
             return getattr(torch, self.vibevoice_dtype)
-        
+
         device = self.get_device()
         if device == "cuda":
             return torch.bfloat16
@@ -154,17 +173,18 @@ class Settings(BaseSettings):
             return torch.float32
         else:
             return torch.float32
-    
+
     def get_attn_implementation(self) -> str:
         """Get the appropriate attention implementation."""
         if self.vibevoice_attn_implementation:
             return self.vibevoice_attn_implementation
-        
+
         device = self.get_device()
         if device == "cuda":
             # Try flash_attention_2 first, fallback to sdpa
             try:
                 import flash_attn
+
                 return "flash_attention_2"
             except ImportError:
                 return "sdpa"
@@ -174,5 +194,3 @@ class Settings(BaseSettings):
 
 # Global settings instance
 settings = Settings()
-
-
