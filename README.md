@@ -11,6 +11,7 @@ A production-ready FastAPI server that exposes the VibeVoice TTS model as an Ope
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue?logo=docker)](https://www.docker.com)
 [![OpenAI Compatible](https://img.shields.io/badge/OpenAI-Compatible-orange?logo=openai)](https://platform.openai.com/docs/api-reference/audio)
 [![Ampere Optimized](https://img.shields.io/badge/Ampere-Optimized-green?logo=nvidia)](https://developer.nvidia.com/ampere-computing-architecture)
+[![Smart GPU Autodetect](https://img.shields.io/badge/GPU-Smart%20Autodetect-blue?logo=nvidia)](https://github.com/ncoder-ai/VibeVoice-FastAPI)
 
 </div>
 
