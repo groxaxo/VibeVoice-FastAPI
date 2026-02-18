@@ -167,7 +167,7 @@ class Settings(BaseSettings):
             return getattr(torch, self.vibevoice_dtype)
 
         device = self.get_device()
-        if device == "cuda":
+        if "cuda" in str(device):
             return torch.bfloat16
         elif device == "mps":
             return torch.float32
@@ -180,7 +180,7 @@ class Settings(BaseSettings):
             return self.vibevoice_attn_implementation
 
         device = self.get_device()
-        if device == "cuda":
+        if "cuda" in str(device):
             # Try flash_attention_2 first, fallback to sdpa
             try:
                 import flash_attn

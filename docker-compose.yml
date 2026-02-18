@@ -42,6 +42,8 @@ services:
     
     # Volume mounts
     volumes:
+      # Mount source code for hot-reloading/fixes
+      - ./api:/app/api:ro
       # Mount voices directory
       - ${VOICES_DIR:-./demo/voices}:/app/voices:ro
       # Mount HuggingFace cache (optional, for faster model loading)

@@ -11,6 +11,7 @@ from api.services.voice_manager import VoiceManager
 from api.utils.audio_utils import audio_to_bytes, get_content_type, get_audio_duration
 from api.utils.streaming import create_streaming_response
 from api.utils.language_utils import detect_language
+from api.utils.text_utils import sanitize_text
 from api.config import settings
 
 logger = logging.getLogger(__name__)
@@ -50,11 +51,19 @@ async def create_speech(
     Supports auto-detection of input language when language='auto' or not specified.
     """
     try:
+        # Sanitize input text
+        sanitized_input = sanitize_text(request.input)
+        if not sanitized_input:
+            raise HTTPException(
+                status_code=400, detail="Input text is empty after sanitization"
+            )
+
         # Detect or use specified language
         if request.language == "auto" or request.language is None:
-            detected_language = detect_language(request.input)
+            detected_language = detect_language(sanitized_input)
         else:
             detected_language = request.language
+
         # Try loading as OpenAI voice first, then as direct VibeVoice preset
         voice_audio = voices.load_voice_audio(request.voice, is_openai_voice=True)
 
@@ -72,7 +81,7 @@ async def create_speech(
 
         # Format text as single-speaker script
         formatted_script = tts.format_script_for_single_speaker(
-            request.input, speaker_id=0
+            sanitized_input, speaker_id=0
         )
 
         # Generate speech with timing
@@ -91,17 +100,14 @@ async def create_speech(
 
         # Log generation details at INFO level
         text_preview = (
-            request.input[:100] + "..." if len(request.input) > 100 else request.input
+            sanitized_input[:100] + "..."
+            if len(sanitized_input) > 100
+            else sanitized_input
         )
         logger.info(
             f"Generated speech - Text: {text_preview} | Voice: {request.voice} | "
             f"Model: {request.model} ({settings.vibevoice_model_path}) | "
             f"Language: {detected_language} | "
-            f"CFG: {settings.default_cfg_scale} | Audio Duration: {audio_duration:.2f}s | Generation Time: {generation_time:.2f}s"
-        )
-        logger.info(
-            f"Generated speech - Text: {text_preview} | Voice: {request.voice} | "
-            f"Model: {request.model} ({settings.vibevoice_model_path}) | "
             f"CFG: {settings.default_cfg_scale} | Audio Duration: {audio_duration:.2f}s | Generation Time: {generation_time:.2f}s"
         )
 

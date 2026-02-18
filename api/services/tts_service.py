@@ -51,6 +51,8 @@ class TTSService:
         print(
             f"Using device: {self.device}, dtype: {self.dtype}, attention: {attn_implementation}"
         )
+        is_cuda_device = str(self.device).startswith("cuda")
+        cuda_device_map = "cuda" if self.device == "cuda" else {"": str(self.device)}
 
         # Load processor
         self.processor = VibeVoiceProcessor.from_pretrained(
@@ -59,9 +61,8 @@ class TTSService:
 
         # Determine if we should load to CPU first for quantization
         # This avoids loading full precision model to GPU then quantizing (wastes VRAM)
-        load_to_cpu_first = (
-            self.settings.vibevoice_quantization and self.device == "cuda"
-        )
+        # User requested to avoid CPU loading, so force direct GPU loading
+        load_to_cpu_first = False
 
         if load_to_cpu_first:
             print("Loading model to CPU first for quantization (saves GPU memory)...")
@@ -108,12 +109,12 @@ class TTSService:
                         )
                     )
                     self.model.to("mps")
-                elif self.device == "cuda":
+                elif is_cuda_device:
                     self.model = (
                         VibeVoiceForConditionalGenerationInference.from_pretrained(
                             self.settings.vibevoice_model_path,
                             torch_dtype=self.dtype,
-                            device_map="cuda",
+                            device_map=cuda_device_map,
                             attn_implementation=attn_implementation,
                         )
                     )
@@ -142,12 +143,12 @@ class TTSService:
                             )
                         )
                         self.model.to("mps")
-                    elif self.device == "cuda":
+                    elif is_cuda_device:
                         self.model = (
                             VibeVoiceForConditionalGenerationInference.from_pretrained(
                                 self.settings.vibevoice_model_path,
                                 torch_dtype=self.dtype,
-                                device_map="cuda",
+                                device_map=cuda_device_map,
                                 attn_implementation=attn_implementation,
                             )
                         )
@@ -164,6 +165,13 @@ class TTSService:
                     raise e
 
             self.model.eval()
+
+            # Apply quantization if requested (even if loaded directly to GPU)
+            if self.settings.vibevoice_quantization:
+                print(
+                    f"Applying {self.settings.vibevoice_quantization} quantization on {self.device}..."
+                )
+                self._apply_quantization()
 
         # Apply torch.compile for optimized inference
         if self.settings.torch_compile:
@@ -397,7 +405,11 @@ class TTSService:
         )
 
         # Move to device
-        target_device = self.device if self.device in ("cuda", "mps") else "cpu"
+        target_device = (
+            self.device
+            if str(self.device).startswith("cuda") or self.device == "mps"
+            else "cpu"
+        )
         for k, v in inputs.items():
             if torch.is_tensor(v):
                 inputs[k] = v.to(target_device)

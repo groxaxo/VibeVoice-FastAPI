@@ -10,12 +10,13 @@ from api.models import (
     VibeVoiceGenerateRequest,
     VibeVoiceGenerateResponse,
     VoiceListResponse,
-    HealthResponse
+    HealthResponse,
 )
 from api.services.tts_service import TTSService
 from api.services.voice_manager import VoiceManager
 from api.utils.audio_utils import audio_to_bytes, get_audio_duration
 from api.utils.streaming import create_streaming_response
+from api.utils.text_utils import sanitize_text
 from api.config import settings
 
 logger = logging.getLogger(__name__)
@@ -46,11 +47,11 @@ def get_voice_manager() -> VoiceManager:
 async def generate_speech(
     request: VibeVoiceGenerateRequest,
     tts: TTSService = Depends(get_tts_service),
-    voices: VoiceManager = Depends(get_voice_manager)
+    voices: VoiceManager = Depends(get_voice_manager),
 ):
     """
     Generate multi-speaker speech with VibeVoice-specific features.
-    
+
     Supports:
     - Multi-speaker dialogue (up to 4 speakers)
     - Custom voice samples via base64 or presets
@@ -61,7 +62,7 @@ async def generate_speech(
     try:
         # Load voice samples for each speaker
         voice_samples = []
-        
+
         for speaker_config in sorted(request.speakers, key=lambda s: s.speaker_id):
             if speaker_config.voice_sample_base64:
                 # Decode base64 audio
@@ -69,122 +70,151 @@ async def generate_speech(
                     audio_bytes = base64.b64decode(speaker_config.voice_sample_base64)
                     import io
                     import soundfile as sf
+
                     audio_data, sr = sf.read(io.BytesIO(audio_bytes))
-                    
+
                     # Resample if needed
                     if sr != 24000:
                         import librosa
-                        audio_data = librosa.resample(audio_data, orig_sr=sr, target_sr=24000)
-                    
+
+                        audio_data = librosa.resample(
+                            audio_data, orig_sr=sr, target_sr=24000
+                        )
+
                     # Convert to mono if needed
                     if len(audio_data.shape) > 1:
                         import numpy as np
+
                         audio_data = np.mean(audio_data, axis=1)
-                    
-                    voice_samples.append(audio_data.astype('float32'))
-                    
+
+                    voice_samples.append(audio_data.astype("float32"))
+
                 except Exception as e:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Failed to decode voice sample for speaker {speaker_config.speaker_id}: {str(e)}"
+                        detail=f"Failed to decode voice sample for speaker {speaker_config.speaker_id}: {str(e)}",
                     )
-            
+
             elif speaker_config.voice_preset:
                 # Load from preset
-                audio_data = voices.load_voice_audio(speaker_config.voice_preset, is_openai_voice=False)
-                
+                audio_data = voices.load_voice_audio(
+                    speaker_config.voice_preset, is_openai_voice=False
+                )
+
                 if audio_data is None:
-                    available_voices = [v["name"] for v in voices.list_available_voices()]
+                    available_voices = [
+                        v["name"] for v in voices.list_available_voices()
+                    ]
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Voice preset '{speaker_config.voice_preset}' not found. Available: {', '.join(available_voices)}"
+                        detail=f"Voice preset '{speaker_config.voice_preset}' not found. Available: {', '.join(available_voices)}",
                     )
-                
+
                 voice_samples.append(audio_data)
-            
+
             else:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Speaker {speaker_config.speaker_id} must have either voice_preset or voice_sample_base64"
+                    detail=f"Speaker {speaker_config.speaker_id} must have either voice_preset or voice_sample_base64",
                 )
-        
+
         # Extract voice presets for logging
         voice_list = []
         for speaker_config in sorted(request.speakers, key=lambda s: s.speaker_id):
             if speaker_config.voice_preset:
-                voice_list.append(f"speaker{speaker_config.speaker_id}={speaker_config.voice_preset}")
+                voice_list.append(
+                    f"speaker{speaker_config.speaker_id}={speaker_config.voice_preset}"
+                )
             else:
                 voice_list.append(f"speaker{speaker_config.speaker_id}=base64_audio")
         voices_str = ", ".join(voice_list)
-        
+
         # Get actual inference_steps value (request value or default from settings)
-        actual_inference_steps = request.inference_steps if request.inference_steps is not None else settings.vibevoice_inference_steps
-        
+        actual_inference_steps = (
+            request.inference_steps
+            if request.inference_steps is not None
+            else settings.vibevoice_inference_steps
+        )
+
+        # Sanitize input script
+        sanitized_script = sanitize_text(request.script)
+        if not sanitized_script:
+            raise HTTPException(
+                status_code=400, detail="Script is empty after sanitization"
+            )
+
         # Generate speech
         if request.stream:
             # Return streaming response
             # Note: For streaming, we log before generation starts since timing is async
-            text_preview = request.script[:100] + "..." if len(request.script) > 100 else request.script
+            text_preview = (
+                sanitized_script[:100] + "..."
+                if len(sanitized_script) > 100
+                else sanitized_script
+            )
             logger.info(
                 f"Generating speech (streaming) - Text: {text_preview} | Voices: {voices_str} | "
                 f"Model: {settings.vibevoice_model_path} | CFG: {request.cfg_scale} | "
                 f"Steps: {actual_inference_steps} | Seed: {request.seed if request.seed is not None else 'None'}"
             )
-            
+
             audio_stream = tts.generate_speech(
-                text=request.script,
+                text=sanitized_script,
                 voice_samples=voice_samples,
                 cfg_scale=request.cfg_scale,
-                inference_steps=request.inference_steps,
+                inference_steps=actual_inference_steps,
                 seed=request.seed,
-                stream=True
+                stream=True,
             )
-            
+
             # For streaming, we can't measure exact time, but log start
             return create_streaming_response(
                 audio_stream,
                 format=request.response_format,
                 sample_rate=24000,
-                use_sse=True
+                use_sse=True,
             )
-        
+
         else:
             # Generate all at once
             start_time = time.time()
             audio = tts.generate_speech(
-                text=request.script,
+                text=sanitized_script,
                 voice_samples=voice_samples,
                 cfg_scale=request.cfg_scale,
-                inference_steps=request.inference_steps,
+                inference_steps=actual_inference_steps,
                 seed=request.seed,
-                stream=False
+                stream=False,
             )
             generation_time = time.time() - start_time
-            
+
             # Calculate audio duration
             audio_duration = get_audio_duration(audio, sample_rate=24000)
-            
+
             # Log generation details at INFO level
-            text_preview = request.script[:100] + "..." if len(request.script) > 100 else request.script
+            text_preview = (
+                sanitized_script[:100] + "..."
+                if len(sanitized_script) > 100
+                else sanitized_script
+            )
             logger.info(
                 f"Generated speech - Text: {text_preview} | Voices: {voices_str} | "
                 f"Model: {settings.vibevoice_model_path} | CFG: {request.cfg_scale} | "
                 f"Steps: {actual_inference_steps} | Seed: {request.seed if request.seed is not None else 'None'} | "
                 f"Audio Duration: {audio_duration:.2f}s | Generation Time: {generation_time:.2f}s"
             )
-            
+
             # Convert to requested format
             audio_bytes = audio_to_bytes(
-                audio,
-                sample_rate=24000,
-                format=request.response_format
+                audio, sample_rate=24000, format=request.response_format
             )
-            
+
             # Use the already calculated duration
             duration = audio_duration
-            
+
             # Return audio response
             from api.utils.audio_utils import get_content_type
+
             return Response(
                 content=audio_bytes,
                 media_type=get_content_type(request.response_format),
@@ -192,15 +222,16 @@ async def generate_speech(
                     "Content-Disposition": f"attachment; filename=vibevoice_output.{request.response_format}",
                     "X-Audio-Duration": str(duration),
                     "X-Audio-Format": request.response_format,
-                    "X-Audio-Sample-Rate": "24000"
-                }
+                    "X-Audio-Sample-Rate": "24000",
+                },
             )
-        
+
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error generating speech: {e}")
         import traceback
+
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -220,7 +251,7 @@ async def list_voices(voices: VoiceManager = Depends(get_voice_manager)):
 @router.get("/health", response_model=HealthResponse)
 async def health_check(
     tts: TTSService = Depends(get_tts_service),
-    voices: VoiceManager = Depends(get_voice_manager)
+    voices: VoiceManager = Depends(get_voice_manager),
 ):
     """
     Check service health and model status.
@@ -230,14 +261,12 @@ async def health_check(
             status="healthy",
             model_loaded=tts.is_loaded,
             device=tts.device if tts.device else "unknown",
-            model_path=settings.vibevoice_model_path
+            model_path=settings.vibevoice_model_path,
         )
     except Exception as e:
         return HealthResponse(
             status="unhealthy",
             model_loaded=False,
             device="unknown",
-            model_path=settings.vibevoice_model_path
+            model_path=settings.vibevoice_model_path,
         )
-
-

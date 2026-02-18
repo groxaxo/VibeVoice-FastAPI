@@ -12,7 +12,6 @@ fi
 
 # Activate virtual environment
 source venv/bin/activate
-export CUDA_VISIBLE_DEVICES=3
 # Load environment variables from .env if it exists
 if [ -f .env ]; then
     export $(cat .env | grep -v '^#' | xargs)
@@ -43,5 +42,4 @@ uvicorn api.main:app \
     --port $PORT \
     --workers $WORKERS \
     --log-level $LOG_LEVEL
-
 
