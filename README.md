@@ -248,12 +248,26 @@ API_CORS_ORIGINS=*
 TORCH_COMPILE=true                                   # ~40% speedup (slower first request)
 TORCH_COMPILE_MODE=default                           # default, reduce-overhead, or max-autotune
 TORCH_CACHE_DIR=~/.cache/torch_compile_vibevoice     # persist compile cache across restarts
+VIBEVOICE_LAZY_LOAD=false                            # false=eager (default): model always resident; true=lazy load on first request
 # VIBEVOICE_QUANTIZATION=int8_torchao                # Runtime torchao quant on top of FP16 base
 
 # Generation Defaults
 DEFAULT_CFG_SCALE=1.8                                # 1.0-3.0
 DEFAULT_RESPONSE_FORMAT=mp3
 ```
+
+### Model Loading & Startup
+
+By default the model loads **eagerly at startup** and stays resident in VRAM, so every request is served at full speed with no cold-start. This is ideal when VibeVoice has the GPU to itself (a dedicated TTS host).
+
+If you share the GPU and want to reclaim VRAM when idle, opt into **lazy loading** — the model loads on the first request and unloads after `VIBEVOICE_IDLE_TIMEOUT_SECONDS` of inactivity:
+
+```bash
+VIBEVOICE_LAZY_LOAD=true           # opt into lazy load (default: false = eager)
+VIBEVOICE_IDLE_TIMEOUT_SECONDS=300 # unload after 5 min idle (lazy load only)
+```
+
+With lazy load on, the first request after an idle period pays a one-time load cost (~30-40s); subsequent requests are fast until the next idle-unload.
 
 ## 🐳 Docker Deployment
 

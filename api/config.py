@@ -43,14 +43,20 @@ class Settings(BaseSettings):
         description="torch.compile mode: 'default', 'reduce-overhead', or 'max-autotune' (slower compile, faster inference)"
     )
 
-    # Lazy-load + idle-unload (Facu: keep VRAM free when not in use)
+    # Model loading: EAGER by default — the model loads at startup and stays
+    # resident in VRAM (lowest latency, always ready). Opt into lazy loading by
+    # setting VIBEVOICE_LAZY_LOAD=true (defer load to first request + idle-unload
+    # to free VRAM between bursts on a shared GPU).
     vibevoice_lazy_load: bool = Field(
-        default=True,
-        description="If True, do NOT load the model at startup — load it on the first request. Saves 38s startup + ~8.7 GB VRAM at idle."
+        default=False,
+        description="If True, do NOT load the model at startup — load it on the first request and "
+        "idle-unload after vibevoice_idle_timeout_seconds. Default is False (eager): the model "
+        "loads at startup and stays resident. Set VIBEVOICE_LAZY_LOAD=true to opt into lazy loading."
     )
     vibevoice_idle_timeout_seconds: int = Field(
         default=300,
-        description="If lazy_load is True, unload the model after this many seconds of inactivity (0 = never unload)."
+        description="Only used when lazy_load is True: unload the model after this many seconds of "
+        "inactivity (0 = never unload). Ignored when eager (the default)."
     )
 
     # Voice Configuration

@@ -59,3 +59,7 @@ Thumbs.db
 .DS_Store
 
 .env.backup
+
+# Local backups (editor + env snapshots)
+.edit-backups/
+.env.bak.*

@@ -45,7 +45,7 @@ class TTSService:
         # load_model(). After each successful generation, an idle timer of
         # `idle_timeout_seconds` starts; if no new request arrives in that
         # window, the model is moved off-GPU and freed, releasing VRAM.
-        self._lazy_load = bool(getattr(settings, "vibevoice_lazy_load", True))
+        self._lazy_load = bool(getattr(settings, "vibevoice_lazy_load", False))
         self._idle_timeout_seconds = int(getattr(settings, "vibevoice_idle_timeout_seconds", 300))
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_timer_lock = threading.Lock()
