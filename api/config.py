@@ -94,6 +94,17 @@ class Settings(BaseSettings):
         default=90 * 60,  # 90 minutes in seconds
         description="Maximum generation length in seconds"
     )
+    vibevoice_max_new_tokens: int = Field(
+        default=256,
+        description=(
+            "Hard cap on new acoustic tokens per model.generate() call. VibeVoice's "
+            "tokenizer runs at ~7.5 Hz, so 256 tokens ≈ 34s of audio per chunk. Passed as "
+            "max_new_tokens — this bounds the KV-cache preallocation (the model's "
+            "max_position_embeddings is 32768, which with max_new_tokens=None would "
+            "preallocate a 32k-token cache and OOM a 12GB GPU). Together with the default "
+            "per-sentence chunking this keeps VRAM bounded. Env: VIBEVOICE_MAX_NEW_TOKENS."
+        )
+    )
     default_do_sample: bool = Field(
         default=False,
         description="Whether to use sampling for text generation (False = greedy decoding)"

@@ -490,7 +490,7 @@ class TTSService:
                 with self._generate_lock, torch.no_grad():
                     outputs = self.model.generate(
                         **inputs,
-                        max_new_tokens=None,
+                        max_new_tokens=self.settings.vibevoice_max_new_tokens,
                         cfg_scale=cfg_scale,
                         tokenizer=self.processor.tokenizer,
                         generation_config={'do_sample': False},
@@ -571,7 +571,7 @@ class TTSService:
                 with self._generate_lock, torch.no_grad():
                     self.model.generate(
                         **inputs,
-                        max_new_tokens=None,
+                        max_new_tokens=self.settings.vibevoice_max_new_tokens,
                         cfg_scale=cfg_scale,
                         tokenizer=self.processor.tokenizer,
                         generation_config={'do_sample': False},
