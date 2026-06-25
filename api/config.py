@@ -43,6 +43,16 @@ class Settings(BaseSettings):
         description="torch.compile mode: 'default', 'reduce-overhead', or 'max-autotune' (slower compile, faster inference)"
     )
 
+    # Lazy-load + idle-unload (Facu: keep VRAM free when not in use)
+    vibevoice_lazy_load: bool = Field(
+        default=True,
+        description="If True, do NOT load the model at startup — load it on the first request. Saves 38s startup + ~8.7 GB VRAM at idle."
+    )
+    vibevoice_idle_timeout_seconds: int = Field(
+        default=300,
+        description="If lazy_load is True, unload the model after this many seconds of inactivity (0 = never unload)."
+    )
+
     # Voice Configuration
     voices_dir: str = Field(
         default="/app/voices",  # Docker default; override with VOICES_DIR=demo/voices for local dev

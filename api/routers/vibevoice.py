@@ -31,9 +31,18 @@ voice_manager: VoiceManager = None
 
 
 def get_tts_service() -> TTSService:
-    """Dependency to get TTS service."""
-    if tts_service is None or not tts_service.is_loaded:
-        raise HTTPException(status_code=503, detail="TTS service not ready")
+    """Dependency to get TTS service. When lazy-load is enabled the model is
+    loaded here on the first request — this is the single entry point that
+    triggers the actual load. Subsequent requests are a fast no-op."""
+    if tts_service is None:
+        raise HTTPException(status_code=503, detail="TTS service not initialized")
+    if not tts_service.is_loaded:
+        if not settings.vibevoice_lazy_load:
+            raise HTTPException(status_code=503, detail="TTS service not ready")
+        logger.info("Lazy-load: triggering model load on first request...")
+        # Synchronous load — happens once per idle window. The first request
+        # pays the 30-40 s load cost, every subsequent request is fast.
+        tts_service.load_model()
     return tts_service
 
 

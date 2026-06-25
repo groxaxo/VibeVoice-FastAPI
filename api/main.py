@@ -42,30 +42,41 @@ async def lifespan(app: FastAPI):
     # Initialize TTS service
     logger.info("Initializing TTS service...")
     tts_service = TTSService(settings)
-    
-    # Load model
-    logger.info("Loading VibeVoice model (this may take a few minutes)...")
-    try:
-        tts_service.load_model()
-        logger.info("Model loaded successfully!")
-    except Exception as e:
-        logger.error(f"Failed to load model: {e}")
-        import traceback
-        traceback.print_exc()
-        raise
-    
+
+    # Load model — skip on startup if lazy_load is enabled. The first
+    # generate_speech() request will trigger the actual load.
+    if settings.vibevoice_lazy_load:
+        logger.info(
+            "Lazy-load enabled: model will load on first request "
+            f"(idle-unload after {settings.vibevoice_idle_timeout_seconds}s)."
+        )
+    else:
+        logger.info("Loading VibeVoice model (this may take a few minutes)...")
+        try:
+            tts_service.load_model()
+            logger.info("Model loaded successfully!")
+        except Exception as e:
+            logger.error(f"Failed to load model: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
     # Set global service instances in routers
     openai_tts.tts_service = tts_service
     openai_tts.voice_manager = voice_manager
     vibevoice.tts_service = tts_service
     vibevoice.voice_manager = voice_manager
-    
+
     logger.info("API server ready!")
-    
+
     yield
-    
+
     # Shutdown
     logger.info("Shutting down VibeVoice API server...")
+    try:
+        tts_service.unload_model()
+    except Exception as e:
+        logger.warning(f"Error unloading model on shutdown: {e}")
 
 
 # Create FastAPI app
@@ -116,7 +127,43 @@ async def root():
 @app.get("/health")
 async def health():
     """Simple health check endpoint."""
-    return {"status": "healthy"}
+    from api.routers import vibevoice as _vibevoice_router
+    loaded = bool(_vibevoice_router.tts_service and _vibevoice_router.tts_service.is_loaded)
+    return {
+        "status": "healthy",
+        "model_loaded": loaded,
+        "lazy_load": settings.vibevoice_lazy_load,
+        "idle_timeout_seconds": settings.vibevoice_idle_timeout_seconds,
+    }
+
+
+@app.post("/v1/vibevoice/unload")
+async def unload_now():
+    """Manually unload the model from VRAM. Useful before long GPU-heavy
+    jobs (training, gaming) or for testing the lazy-load path."""
+    from api.routers import vibevoice as _vibevoice_router
+    svc = _vibevoice_router.tts_service
+    if svc is None:
+        return {"status": "no_service"}
+    was_loaded = svc.is_loaded
+    svc.unload_model()
+    return {
+        "status": "unloaded" if was_loaded else "already_unloaded",
+        "model_loaded": svc.is_loaded,
+    }
+
+
+@app.post("/v1/vibevoice/preload")
+async def preload_now():
+    """Force-load the model now (instead of waiting for the first request).
+    Returns when the model is in VRAM and ready."""
+    from api.routers import vibevoice as _vibevoice_router
+    svc = _vibevoice_router.tts_service
+    if svc is None:
+        return JSONResponse(status_code=503, content={"status": "no_service"})
+    if not svc.is_loaded:
+        svc.load_model()
+    return {"status": "loaded", "model_loaded": svc.is_loaded}
 
 
 # Global exception handler

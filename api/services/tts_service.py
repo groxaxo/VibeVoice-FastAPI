@@ -40,12 +40,31 @@ class TTSService:
         # this lock within ~one outer-loop step (~100-500ms) when cancelled,
         # so the next request doesn't hang.
         self._generate_lock = threading.Lock()
+        # Lazy-load + idle-unload support. When `lazy_load` is True the model
+        # is NOT loaded at startup; the first generate() call triggers
+        # load_model(). After each successful generation, an idle timer of
+        # `idle_timeout_seconds` starts; if no new request arrives in that
+        # window, the model is moved off-GPU and freed, releasing VRAM.
+        self._lazy_load = bool(getattr(settings, "vibevoice_lazy_load", True))
+        self._idle_timeout_seconds = int(getattr(settings, "vibevoice_idle_timeout_seconds", 300))
+        self._idle_timer: Optional[threading.Timer] = None
+        self._idle_timer_lock = threading.Lock()
     
     def load_model(self):
-        """Load VibeVoice model and processor."""
+        """Load VibeVoice model and processor. If the model is already loaded
+        (lazy-load path: second request onwards), this is a no-op.
+
+        When `vibevoice_lazy_load` is set, callers should NOT invoke this at
+        startup — let generate_speech() trigger the load on first request.
+        Loading on demand also cancels any pending idle-unload timer.
+        """
         if self._model_loaded:
             print("Model already loaded")
+            self._cancel_idle_timer()
             return
+
+        # Cancel any in-flight unload timer — we're loading now.
+        self._cancel_idle_timer()
 
         print(f"Loading VibeVoice model from {self.settings.vibevoice_model_path}")
 
@@ -308,7 +327,93 @@ class TTSService:
     def is_loaded(self) -> bool:
         """Check if model is loaded."""
         return self._model_loaded
-    
+
+    def unload_model(self):
+        """Move the model and processor out of GPU/CPU memory and release
+        VRAM. Safe to call multiple times. Used by the idle-unload timer."""
+        if not self._model_loaded:
+            return
+
+        logger.info("Unloading VibeVoice model (idle timeout reached).")
+
+        # Move model off GPU first, then drop references.
+        try:
+            if self.model is not None and self.device == "cuda" and torch.cuda.is_available():
+                self.model.to("cpu")
+        except Exception as e:
+            logger.warning(f"Could not move model to CPU during unload: {e}")
+
+        self.model = None
+        self.processor = None
+        self._model_loaded = False
+
+        # Aggressively release VRAM / RAM.
+        try:
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+        except Exception as e:
+            logger.warning(f"Cache cleanup during unload failed: {e}")
+
+    def _start_idle_timer(self):
+        """Start (or restart) the idle-unload timer. When it fires, the model
+        is moved off GPU and freed. Only active when `vibevoice_lazy_load` is
+        True and `vibevoice_idle_timeout_seconds` > 0."""
+        if not self._lazy_load:
+            return
+        if self._idle_timeout_seconds <= 0:
+            return
+
+        with self._idle_timer_lock:
+            self._cancel_idle_timer_unlocked()
+            timer = threading.Timer(
+                self._idle_timeout_seconds,
+                self._on_idle_timeout,
+            )
+            timer.daemon = True
+            self._idle_timer = timer
+            timer.start()
+            logger.debug(
+                f"Idle-unload timer started: {self._idle_timeout_seconds}s"
+            )
+
+    def _cancel_idle_timer(self):
+        with self._idle_timer_lock:
+            self._cancel_idle_timer_unlocked()
+
+    def _cancel_idle_timer_unlocked(self):
+        if self._idle_timer is not None:
+            try:
+                self._idle_timer.cancel()
+            except Exception:
+                pass
+            self._idle_timer = None
+
+    def _on_idle_timeout(self):
+        """Timer callback: unload the model. Re-checks that no new request
+        snuck in between the timer firing and acquiring the unload path."""
+        with self._idle_timer_lock:
+            self._idle_timer = None
+
+        if not self._model_loaded:
+            return
+        # If another request is currently generating, defer — its finally
+        # block will restart the timer on completion.
+        if self._generate_lock.locked():
+            logger.debug(
+                "Idle timeout fired while a generation is in progress; "
+                "deferring unload."
+            )
+            self._start_idle_timer()
+            return
+
+        logger.info(
+            f"No requests for {self._idle_timeout_seconds}s — unloading model."
+        )
+        self.unload_model()
+
     def generate_speech(
         self,
         text: str,
@@ -339,7 +444,11 @@ class TTSService:
             Generated audio array or iterator of audio chunks
         """
         if not self._model_loaded:
-            raise RuntimeError("Model not loaded. Call load_model() first.")
+            if not self._lazy_load:
+                raise RuntimeError("Model not loaded. Call load_model() first.")
+            # Lazy-load path: load on first request, then proceed.
+            logger.info("Lazy-load: model not in memory, loading on first request...")
+            self.load_model()
 
         # Set seed if provided
         if seed is not None:
@@ -412,6 +521,8 @@ class TTSService:
                     if audio.dtype == torch.bfloat16:
                         audio = audio.float()
                     audio = audio.cpu().numpy()
+                # Successful generation: (re)start the idle-unload timer.
+                self._start_idle_timer()
                 return audio
             else:
                 raise RuntimeError("No audio generated")
