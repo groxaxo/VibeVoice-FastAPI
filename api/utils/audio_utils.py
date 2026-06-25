@@ -181,3 +181,44 @@ def concatenate_audio_chunks(
     return np.concatenate(numpy_chunks)
 
 
+def trim_trailing_silence(
+    audio: Union[np.ndarray, torch.Tensor],
+    sample_rate: int = 24000,
+    thresh_ratio: float = 0.02,
+    frame_s: float = 0.02,
+    pad_s: float = 0.2,
+    min_peak: float = 0.01,
+) -> np.ndarray:
+    """Trim trailing near-silence from a mono audio array.
+
+    VibeVoice occasionally fails to emit its stop token and keeps generating
+    silent acoustic frames until max_new_tokens, leaving many seconds of trailing
+    silence after the real speech. This drops everything after the last frame
+    whose RMS exceeds ``thresh_ratio`` of the clip's loudest frame, keeping a
+    short ``pad_s`` tail. Real speech sits far above the threshold (>15% of peak
+    vs <2% for the silent tail), so actual content is never clipped.
+
+    Returns a 1-D float32 numpy array. Essentially-silent clips (peak < min_peak)
+    or clips with no trailing silence are returned unchanged.
+    """
+    if torch.is_tensor(audio):
+        audio = audio.detach().cpu().numpy()
+    a = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if a.size == 0:
+        return a
+    if float(np.abs(a).max()) < min_peak:
+        return a  # essentially silent — leave as-is
+    win = max(1, int(frame_s * sample_rate))
+    nfr = a.size // win
+    if nfr == 0:
+        return a
+    frames = a[: nfr * win].reshape(nfr, win)
+    rms = np.sqrt((frames ** 2).mean(axis=1) + 1e-12)
+    thr = thresh_ratio * float(rms.max())
+    voiced = np.nonzero(rms > thr)[0]
+    if voiced.size == 0:
+        return a
+    end = min(a.size, int((voiced[-1] + 1) * win + pad_s * sample_rate))
+    return a[:end]
+
+

@@ -111,6 +111,16 @@ class Settings(BaseSettings):
             "per-sentence chunking this keeps VRAM bounded. Env: VIBEVOICE_MAX_NEW_TOKENS."
         )
     )
+    vibevoice_trim_silence: bool = Field(
+        default=True,
+        description=(
+            "Trim trailing silence from generated audio. VibeVoice intermittently fails to "
+            "emit its stop token (greedy argmax flipped by FP nondeterminism) and appends "
+            "seconds of silent frames up to max_new_tokens; this removes that tail. Real "
+            "speech sits far above the silence threshold so content is never clipped. "
+            "Env: VIBEVOICE_TRIM_SILENCE."
+        )
+    )
     default_do_sample: bool = Field(
         default=False,
         description="Whether to use sampling for text generation (False = greedy decoding)"

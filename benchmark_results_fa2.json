@@ -1,0 +1,50 @@
+{
+  "config": {
+    "voice": "alloy",
+    "format": "wav",
+    "iterations": 5
+  },
+  "results": [
+    {
+      "iteration": 1,
+      "wall_clock_s": 30.402,
+      "audio_duration_s": 17.201,
+      "rtf": 1.767,
+      "vram_used_gb": 0.04
+    },
+    {
+      "iteration": 2,
+      "wall_clock_s": 26.575,
+      "audio_duration_s": 17.068,
+      "rtf": 1.557,
+      "vram_used_gb": 0.0
+    },
+    {
+      "iteration": 3,
+      "wall_clock_s": 25.069,
+      "audio_duration_s": 16.001,
+      "rtf": 1.567,
+      "vram_used_gb": 0.0
+    },
+    {
+      "iteration": 4,
+      "wall_clock_s": 23.265,
+      "audio_duration_s": 14.801,
+      "rtf": 1.572,
+      "vram_used_gb": -0.0
+    },
+    {
+      "iteration": 5,
+      "wall_clock_s": 23.371,
+      "audio_duration_s": 14.801,
+      "rtf": 1.579,
+      "vram_used_gb": 0.0
+    }
+  ],
+  "summary": {
+    "avg_wall_clock_s": 25.736,
+    "avg_audio_duration_s": 15.974,
+    "avg_rtf": 1.608,
+    "std_rtf": 0.08
+  }
+}

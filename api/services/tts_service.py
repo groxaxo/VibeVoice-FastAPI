@@ -15,6 +15,8 @@ from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
 from vibevoice.modular.streamer import AudioStreamer
 
 from api.config import Settings
+from api.utils.audio_utils import trim_trailing_silence
+from api.utils.text_sanitizer import sanitize_text, is_speakable
 
 
 class TTSService:
@@ -443,6 +445,14 @@ class TTSService:
         Returns:
             Generated audio array or iterator of audio chunks
         """
+        # Anti-padding guard: if nothing speakable remains (prompt was emoji/
+        # symbols only, or sanitization emptied it), skip generation. An empty
+        # prompt is a classic trigger for VibeVoice running on and padding the
+        # output. Both routers already treat a None result as "no audio".
+        if not text or not text.strip():
+            logger.info("No speakable text — skipping generation (avoids padding)")
+            return iter(()) if stream else None
+
         if not self._model_loaded:
             if not self._lazy_load:
                 raise RuntimeError("Model not loaded. Call load_model() first.")
@@ -521,6 +531,16 @@ class TTSService:
                     if audio.dtype == torch.bfloat16:
                         audio = audio.float()
                     audio = audio.cpu().numpy()
+                # Trim trailing silence — VibeVoice intermittently fails to emit its
+                # stop token and appends silent frames up to max_new_tokens (~30s).
+                if getattr(self.settings, "vibevoice_trim_silence", True):
+                    _n0 = np.asarray(audio).reshape(-1).size
+                    audio = trim_trailing_silence(audio, sample_rate=24000)
+                    _n1 = np.asarray(audio).reshape(-1).size
+                    if (_n0 - _n1) > 0.5 * 24000:
+                        logger.info(
+                            f"Trimmed trailing silence: {_n0/24000:.1f}s -> {_n1/24000:.1f}s"
+                        )
                 # Successful generation: (re)start the idle-unload timer.
                 self._start_idle_timer()
                 return audio
@@ -635,14 +655,18 @@ class TTSService:
         Returns:
             Formatted script
         """
-        # Split into sentences/paragraphs
+        # Split into sentences/paragraphs, sanitizing each line before it reaches
+        # the model. Sanitization strips emoji / markup / stray symbols and
+        # guarantees terminal punctuation, which makes VibeVoice far less likely
+        # to miss its stop token and pad the clip with trailing silence. Lines
+        # with nothing speakable left (e.g. emoji-only) are dropped.
         lines = text.strip().split('\n')
         formatted_lines = []
-        
+
         for line in lines:
-            line = line.strip()
-            if line:
+            line = sanitize_text(line)
+            if line and is_speakable(line):
                 formatted_lines.append(f"Speaker {speaker_id}: {line}")
-        
+
         return '\n'.join(formatted_lines)
 
