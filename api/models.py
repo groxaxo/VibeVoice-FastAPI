@@ -119,6 +119,22 @@ class VibeVoiceGenerateRequest(BaseModel):
         default=None,
         description="Random seed for reproducibility"
     )
+    do_sample: Optional[bool] = Field(
+        default=None,
+        description="Enable sampling (True) vs greedy decoding (False). When True, temperature and top_p are used."
+    )
+    temperature: Optional[float] = Field(
+        default=None,
+        ge=0.1,
+        le=2.0,
+        description="Temperature for token sampling (only used when do_sample=True)"
+    )
+    top_p: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Top-p nucleus sampling (only used when do_sample=True)"
+    )
     
     @validator("speakers")
     def validate_speaker_ids(cls, v):
