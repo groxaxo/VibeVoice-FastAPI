@@ -13,6 +13,7 @@ from api.services.tts_service import TTSService
 from api.services.voice_manager import VoiceManager
 from api.utils.audio_utils import audio_to_bytes, get_content_type, get_audio_duration, concatenate_audio_chunks
 from api.utils.streaming import create_streaming_response
+from api.utils.text_utils import sanitize_text
 from api.config import settings
 
 logger = logging.getLogger(__name__)
@@ -115,6 +116,11 @@ async def create_speech(
     stream=False -> all sentences generated, merged, returned as one file.
     """
     try:
+        # Sanitize input text
+        sanitized_input = sanitize_text(body.input)
+        if not sanitized_input:
+            raise HTTPException(status_code=400, detail="Input text is empty after sanitization")
+
         voice_audio = voices.load_voice_audio(body.voice, is_openai_voice=True)
         if voice_audio is None:
             voice_audio = voices.load_voice_audio(body.voice, is_openai_voice=False)
@@ -186,7 +192,7 @@ async def create_speech(
             return Response(status_code=499)
 
         audio_duration = get_audio_duration(audio, sample_rate=24000)
-        text_preview = body.input[:100] + "..." if len(body.input) > 100 else body.input
+        text_preview = sanitized_input[:100] + "..." if len(sanitized_input) > 100 else sanitized_input
         logger.info(
             f"Generated speech ({len(sentences)} sentences) | Voice: {body.voice} | "
             f"CFG: {settings.default_cfg_scale} | Audio: {audio_duration:.2f}s | Gen: {generation_time:.2f}s"

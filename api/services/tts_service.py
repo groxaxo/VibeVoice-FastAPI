@@ -105,7 +105,7 @@ class TTSService:
         load_to_cpu_first = (
             self.settings.vibevoice_quantization
             and not unified_quantized
-            and self.device == "cuda"
+            and str(self.device).startswith("cuda")
         )
 
         if load_to_cpu_first:
@@ -144,7 +144,7 @@ class TTSService:
                         device_map=None,
                     )
                     self.model.to("mps")
-                elif self.device == "cuda":
+                elif str(self.device).startswith("cuda"):
                     self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
                         self.settings.vibevoice_model_path,
                         torch_dtype=self.dtype,
@@ -172,7 +172,7 @@ class TTSService:
                             device_map=None,
                         )
                         self.model.to("mps")
-                    elif self.device == "cuda":
+                    elif str(self.device).startswith("cuda"):
                         self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
                             self.settings.vibevoice_model_path,
                             torch_dtype=self.dtype,
@@ -350,7 +350,7 @@ class TTSService:
 
         # Move model off GPU first, then drop references.
         try:
-            if self.model is not None and self.device == "cuda" and torch.cuda.is_available():
+            if self.model is not None and str(self.device).startswith("cuda") and torch.cuda.is_available():
                 self.model.to("cpu")
         except Exception as e:
             logger.warning(f"Could not move model to CPU during unload: {e}")

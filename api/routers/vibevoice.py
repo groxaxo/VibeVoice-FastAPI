@@ -19,6 +19,7 @@ from api.services.tts_service import TTSService
 from api.services.voice_manager import VoiceManager
 from api.utils.audio_utils import audio_to_bytes, get_audio_duration, concatenate_audio_chunks, get_content_type
 from api.utils.streaming import create_streaming_response
+from api.utils.text_utils import sanitize_text
 from api.config import settings
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,11 @@ async def generate_speech(
     - Cooperative cancellation on client disconnect via stop_check_fn
     """
     try:
+        # Sanitize input script
+        sanitized_script = sanitize_text(body.script)
+        if not sanitized_script:
+            raise HTTPException(status_code=400, detail="Script is empty after sanitization")
+
         # Load voice samples for each speaker
         voice_samples = []
 
@@ -193,7 +199,7 @@ async def generate_speech(
                 text=fmt,
                 voice_samples=[voice_samples[speaker_idx]],
                 cfg_scale=body.cfg_scale,
-                inference_steps=body.inference_steps,
+                inference_steps=actual_inference_steps,
                 do_sample=body.do_sample, temperature=body.temperature, top_p=body.top_p,
                 seed=body.seed,
                 stream=False,
@@ -206,7 +212,7 @@ async def generate_speech(
             # client disconnect and is also passed into every per-sentence generate.
             cancel_event = threading.Event()
 
-            text_preview = body.script[:100] + "..." if len(body.script) > 100 else body.script
+            text_preview = sanitized_script[:100] + "..." if len(sanitized_script) > 100 else sanitized_script
             logger.info(
                 f"Generating speech (streaming, {len(chunks)} chunk(s)) - Text: {text_preview} | "
                 f"Voices: {voices_str} | Model: {settings.vibevoice_model_path} | "
@@ -277,7 +283,7 @@ async def generate_speech(
 
             audio_duration = get_audio_duration(audio, sample_rate=24000)
 
-            text_preview = body.script[:100] + "..." if len(body.script) > 100 else body.script
+            text_preview = sanitized_script[:100] + "..." if len(sanitized_script) > 100 else sanitized_script
             logger.info(
                 f"Generated speech ({len(chunks)} chunk(s)) - Text: {text_preview} | Voices: {voices_str} | "
                 f"Model: {settings.vibevoice_model_path} | CFG: {body.cfg_scale} | "
