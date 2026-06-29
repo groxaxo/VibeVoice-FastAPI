@@ -7,6 +7,16 @@ from typing import Iterator, List, Optional, Union
 from transformers import set_seed
 import logging
 
+def _build_gen_config(do_sample, temperature, top_p):
+    config = {}
+    if do_sample is not None:
+        config["do_sample"] = do_sample
+    if temperature is not None:
+        config["temperature"] = temperature
+    if top_p is not None:
+        config["top_p"] = top_p
+    return config if config else {"do_sample": False}
+
 logger = logging.getLogger(__name__)
 
 from vibevoice.modular.configuration_vibevoice import VibeVoiceConfig
@@ -423,7 +433,7 @@ class TTSService:
         cfg_scale: float = 1.3,
         inference_steps: Optional[int] = None,
         seed: Optional[int] = None,
-        stream: bool = False,
+        stream: bool = False, do_sample: Optional[bool] = None, temperature: Optional[float] = None, top_p: Optional[float] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> Union[np.ndarray, Iterator[np.ndarray]]:
         """
@@ -503,7 +513,7 @@ class TTSService:
                         max_new_tokens=self.settings.vibevoice_max_new_tokens,
                         cfg_scale=cfg_scale,
                         tokenizer=self.processor.tokenizer,
-                        generation_config={'do_sample': False},
+                        generation_config=_build_gen_config(do_sample, temperature, top_p),
                         stop_check_fn=stop_check_fn,
                         return_speech=True,
                         verbose=False,
@@ -594,7 +604,7 @@ class TTSService:
                         max_new_tokens=self.settings.vibevoice_max_new_tokens,
                         cfg_scale=cfg_scale,
                         tokenizer=self.processor.tokenizer,
-                        generation_config={'do_sample': False},
+                        generation_config=_build_gen_config(do_sample, temperature, top_p),
                         audio_streamer=audio_streamer,
                         stop_check_fn=stop_check_fn,
                         return_speech=True,

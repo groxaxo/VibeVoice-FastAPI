@@ -94,9 +94,8 @@ def _parse_script_to_chunks(script: str, num_speakers: int) -> list:
             idx = 0
             text = line
         idx = max(0, min(idx, num_speakers - 1)) if num_speakers > 0 else 0
-        for sentence in _split_sentences(text):
-            if sentence:
-                chunks.append((idx, sentence))
+        if text:
+            chunks.append((idx, text))
     return chunks
 
 
@@ -195,6 +194,7 @@ async def generate_speech(
                 voice_samples=[voice_samples[speaker_idx]],
                 cfg_scale=body.cfg_scale,
                 inference_steps=body.inference_steps,
+                do_sample=body.do_sample, temperature=body.temperature, top_p=body.top_p,
                 seed=body.seed,
                 stream=False,
                 cancel_event=cancel_event,
