@@ -1,104 +1,137 @@
-"""OpenAI-compatible TTS endpoint with sentence-chunked streaming."""
+"""OpenAI-compatible TTS endpoints."""
+
+from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import threading
 import time
-from fastapi import APIRouter, HTTPException, Depends, Request
+from typing import AsyncIterator
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
-from api.models import OpenAITTSRequest, ErrorResponse
+from api.config import settings
+from api.models import OpenAITTSRequest
 from api.services.tts_service import TTSService
 from api.services.voice_manager import VoiceManager
-from api.utils.audio_utils import audio_to_bytes, get_content_type, get_audio_duration, concatenate_audio_chunks
-from api.utils.streaming import create_streaming_response
-from api.utils.text_utils import sanitize_text
-from api.config import settings
+from api.utils.audio_utils import (
+    adjust_audio_speed,
+    audio_to_bytes,
+    concatenate_audio_chunks,
+    get_audio_duration,
+    get_content_type,
+)
+from api.utils.text_chunking import split_text_chunks
+from api.utils.text_sanitizer import is_speakable, sanitize_text
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter(prefix="/v1/audio", tags=["OpenAI Compatible"])
 
-# Global service instances (initialized in main.py)
-tts_service: TTSService = None
-voice_manager: VoiceManager = None
+tts_service: TTSService | None = None
+voice_manager: VoiceManager | None = None
 
-
-def _split_sentences(text: str) -> list:
-    """Split text at sentence boundaries (. ! ? ;) while preserving ellipsis (...)."""
-    # Protect ellipsis from being treated as a sentence end
-    text = re.sub(r'\.\.\.', '\x00ELP\x00', text)
-    # Split after . ! ? ; followed by whitespace
-    parts = re.split(r'(?<=[.!?;])\s+', text.strip())
-    result = []
-    for part in parts:
-        part = part.replace('\x00ELP\x00', '...').strip()
-        if part:
-            result.append(part)
-    return result if result else [text.strip()]
+_STREAM_SAFE_FORMATS = {"mp3", "opus", "aac", "pcm"}
 
 
 def get_tts_service() -> TTSService:
-    """Dependency to get TTS service. Triggers lazy load on first request."""
     if tts_service is None:
         raise HTTPException(status_code=503, detail="TTS service not initialized")
-    if not tts_service.is_loaded:
-        if not settings.vibevoice_lazy_load:
-            raise HTTPException(status_code=503, detail="TTS service not ready")
-        logger.info("Lazy-load: triggering model load on first request...")
-        tts_service.load_model()
+    if not tts_service.is_loaded and not settings.vibevoice_lazy_load:
+        raise HTTPException(status_code=503, detail="TTS model is unloaded; call /v1/vibevoice/preload")
     return tts_service
 
 
 def get_voice_manager() -> VoiceManager:
-    """Dependency to get voice manager."""
     if voice_manager is None:
         raise HTTPException(status_code=503, detail="Voice manager not initialized")
     return voice_manager
 
 
-async def _sentence_stream_generator(sentences, voice_audio, body, tts, cancel_event, request):
-    """Async generator: generate and yield audio bytes one sentence at a time."""
-    for i, sentence in enumerate(sentences):
-        if cancel_event.is_set():
-            break
-        if await request.is_disconnected():
-            cancel_event.set()
-            break
+def _resolve_voice(voices: VoiceManager, voice_name: str):
+    audio = voices.load_voice_audio(voice_name, is_openai_voice=True)
+    if audio is None:
+        audio = voices.load_voice_audio(voice_name, is_openai_voice=False)
+    if audio is not None:
+        return audio
 
-        formatted = tts.format_script_for_single_speaker(sentence, speaker_id=0)
-        result_holder = {}
+    available_openai = ", ".join(voices.OPENAI_VOICE_MAPPING)
+    available_presets = ", ".join(sorted(voices.voice_presets))
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"Voice '{voice_name}' not found. OpenAI voices: {available_openai}. "
+            f"VibeVoice presets: {available_presets}"
+        ),
+    )
 
-        def _gen(fmt=formatted):
-            try:
-                result_holder['audio'] = tts.generate_speech(
-                    text=fmt,
-                    voice_samples=[voice_audio],
-                    cfg_scale=settings.default_cfg_scale,
-                    stream=False,
-                    cancel_event=cancel_event,
+
+def _generate_chunk(
+    tts: TTSService,
+    sentence: str,
+    voice_audio,
+    cancel_event: threading.Event,
+):
+    formatted = tts.format_script_for_single_speaker(sentence, speaker_id=0)
+    if not formatted:
+        return None
+    return tts.generate_speech(
+        text=formatted,
+        voice_samples=[voice_audio],
+        cfg_scale=settings.default_cfg_scale,
+        stream=False,
+        cancel_event=cancel_event,
+    )
+
+
+def _encode_response_audio(audio, speed: float, response_format: str):
+    adjusted = adjust_audio_speed(audio, speed)
+    encoded = audio_to_bytes(adjusted, sample_rate=24000, format=response_format)
+    return adjusted, encoded
+
+
+async def _sentence_stream_generator(
+    sentences: list[str],
+    voice_audio,
+    body: OpenAITTSRequest,
+    tts: TTSService,
+    cancel_event: threading.Event,
+    request: Request,
+) -> AsyncIterator[bytes]:
+    """Generate bounded utterances without blocking the event loop."""
+    try:
+        with tts.request_context():
+            for index, sentence in enumerate(sentences):
+                if cancel_event.is_set() or await request.is_disconnected():
+                    cancel_event.set()
+                    return
+
+                task = asyncio.create_task(
+                    asyncio.to_thread(_generate_chunk, tts, sentence, voice_audio, cancel_event)
                 )
-            except Exception as e:
-                result_holder['error'] = e
+                while not task.done():
+                    await asyncio.sleep(0.05)
+                    if await request.is_disconnected():
+                        cancel_event.set()
+                        try:
+                            await asyncio.wait_for(task, timeout=5.0)
+                        except (asyncio.TimeoutError, asyncio.CancelledError):
+                            pass
+                        return
 
-        thread = threading.Thread(target=_gen, daemon=True)
-        thread.start()
-
-        while thread.is_alive():
-            await asyncio.sleep(0.05)
-            if cancel_event.is_set() or await request.is_disconnected():
-                cancel_event.set()
-                thread.join(timeout=5.0)
-                return
-
-        if 'error' in result_holder:
-            raise result_holder['error']
-
-        audio = result_holder.get('audio')
-        if audio is not None:
-            logger.info(f"Streaming sentence {i+1}/{len(sentences)}: {sentence[:60]!r}")
-            yield audio_to_bytes(audio, sample_rate=24000, format=body.response_format)
+                audio = await task
+                if audio is None:
+                    continue
+                _, chunk_bytes = await asyncio.to_thread(
+                    _encode_response_audio,
+                    audio,
+                    body.speed,
+                    body.response_format,
+                )
+                logger.debug("Streaming chunk %d/%d", index + 1, len(sentences))
+                yield chunk_bytes
+    finally:
+        cancel_event.set()
 
 
 @router.post("/speech")
@@ -106,124 +139,124 @@ async def create_speech(
     body: OpenAITTSRequest,
     request: Request,
     tts: TTSService = Depends(get_tts_service),
-    voices: VoiceManager = Depends(get_voice_manager)
+    voices: VoiceManager = Depends(get_voice_manager),
 ):
-    """
-    Generate speech from text using OpenAI-compatible API.
-
-    Text is auto-split at sentence boundaries (. ! ? ;) before generation.
-    stream=True  -> each sentence audio yielded immediately (low TTFB).
-    stream=False -> all sentences generated, merged, returned as one file.
-    """
+    """Generate speech through an OpenAI-compatible request shape."""
     try:
-        # Sanitize input text
-        sanitized_input = sanitize_text(body.input)
-        if not sanitized_input:
-            raise HTTPException(status_code=400, detail="Input text is empty after sanitization")
+        sanitized = sanitize_text(body.input)
+        if not sanitized or not is_speakable(sanitized):
+            raise HTTPException(status_code=400, detail="Input contains no speakable text")
 
-        voice_audio = voices.load_voice_audio(body.voice, is_openai_voice=True)
-        if voice_audio is None:
-            voice_audio = voices.load_voice_audio(body.voice, is_openai_voice=False)
-        if voice_audio is None:
-            available_openai = ', '.join(voices.OPENAI_VOICE_MAPPING.keys())
-            available_presets = ', '.join(sorted(voices.voice_presets.keys()))
+        if body.stream and body.response_format not in _STREAM_SAFE_FORMATS:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Voice '{body.voice}' not found. OpenAI voices: {available_openai}. "
-                    f"VibeVoice presets: {available_presets}"
-                )
+                    "Streaming supports mp3, opus, aac, or pcm. Container formats "
+                    "wav, flac, and m4a require a finalized file header."
+                ),
             )
 
-        sentences = _split_sentences(body.input)
-        logger.info(f"Split into {len(sentences)} sentence(s): {sentences}")
+        voice_audio = await asyncio.to_thread(_resolve_voice, voices, body.voice)
+        sentences = split_text_chunks(sanitized, settings.vibevoice_max_chunk_chars)
+        if not sentences:
+            raise HTTPException(status_code=400, detail="Input contains no speakable text")
+
+        preview = sanitized[:100] + ("..." if len(sanitized) > 100 else "")
+        logger.info(
+            "TTS request: %d chunk(s), voice=%s, format=%s, stream=%s, text=%r",
+            len(sentences),
+            body.voice,
+            body.response_format,
+            body.stream,
+            preview,
+        )
         cancel_event = threading.Event()
 
         if body.stream:
-            # Streaming: yield sentence audio as each is generated (low TTFB)
             return StreamingResponse(
-                _sentence_stream_generator(sentences, voice_audio, body, tts, cancel_event, request),
+                _sentence_stream_generator(
+                    sentences, voice_audio, body, tts, cancel_event, request
+                ),
                 media_type=get_content_type(body.response_format),
-                headers={"Transfer-Encoding": "chunked", "Cache-Control": "no-cache"},
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
 
-        # Non-streaming: generate all sentences sequentially, merge, return merged audio
-        result_holder = {}
-        start_time = time.time()
+        start = time.monotonic()
 
-        def _run_all():
-            try:
-                chunks = []
+        def run_all():
+            with tts.request_context():
+                parts = []
                 for sentence in sentences:
                     if cancel_event.is_set():
                         break
-                    fmt = tts.format_script_for_single_speaker(sentence, speaker_id=0)
-                    audio = tts.generate_speech(
-                        text=fmt,
-                        voice_samples=[voice_audio],
-                        cfg_scale=settings.default_cfg_scale,
-                        stream=False,
-                        cancel_event=cancel_event,
-                    )
+                    audio = _generate_chunk(tts, sentence, voice_audio, cancel_event)
                     if audio is not None:
-                        chunks.append(audio)
-                result_holder['audio'] = concatenate_audio_chunks(chunks) if chunks else None
-            except Exception as e:
-                result_holder['error'] = e
+                        parts.append(audio)
+                return concatenate_audio_chunks(parts) if parts else None
 
-        gen_thread = threading.Thread(target=_run_all, daemon=True)
-        gen_thread.start()
-
-        while gen_thread.is_alive():
+        task = asyncio.create_task(asyncio.to_thread(run_all))
+        while not task.done():
             await asyncio.sleep(0.1)
             if await request.is_disconnected():
-                logger.info("Client disconnected — cancelling generation")
+                logger.info("Client disconnected; cancelling TTS generation")
                 cancel_event.set()
-                gen_thread.join(timeout=5.0)
+                try:
+                    await asyncio.wait_for(task, timeout=5.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
                 return Response(status_code=499)
 
-        generation_time = time.time() - start_time
-
-        if 'error' in result_holder:
-            raise result_holder['error']
-
-        audio = result_holder.get('audio')
+        audio = await task
         if audio is None:
             return Response(status_code=499)
 
-        audio_duration = get_audio_duration(audio, sample_rate=24000)
-        text_preview = sanitized_input[:100] + "..." if len(sanitized_input) > 100 else sanitized_input
+        audio, audio_bytes = await asyncio.to_thread(
+            _encode_response_audio,
+            audio,
+            body.speed,
+            body.response_format,
+        )
+        generation_time = time.monotonic() - start
+        duration = get_audio_duration(audio, sample_rate=24000)
         logger.info(
-            f"Generated speech ({len(sentences)} sentences) | Voice: {body.voice} | "
-            f"CFG: {settings.default_cfg_scale} | Audio: {audio_duration:.2f}s | Gen: {generation_time:.2f}s"
+            "Generated %.2fs audio in %.2fs (%d chunk(s), voice=%s)",
+            duration,
+            generation_time,
+            len(sentences),
+            body.voice,
         )
 
-        audio_bytes = audio_to_bytes(audio, sample_rate=24000, format=body.response_format)
         return Response(
             content=audio_bytes,
             media_type=get_content_type(body.response_format),
-            headers={"Content-Disposition": f"attachment; filename=speech.{body.response_format}"}
+            headers={
+                "Content-Disposition": f"attachment; filename=speech.{body.response_format}",
+                "X-Audio-Duration": f"{duration:.3f}",
+            },
         )
-
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error generating speech: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.exception("Error generating OpenAI-compatible speech")
+        raise HTTPException(status_code=500, detail="Speech generation failed") from exc
 
 
 @router.get("/voices")
 async def list_voices(voices: VoiceManager = Depends(get_voice_manager)):
-    """List all available voices in OpenAI-compatible format."""
+    """List OpenAI aliases and custom presets in OpenAI list format."""
     try:
-        voice_list = []
-        for openai_name, vibevoice_preset in voices.OPENAI_VOICE_MAPPING.items():
-            if vibevoice_preset in voices.voice_presets:
-                voice_list.append({"id": openai_name, "object": "voice", "name": openai_name})
-        all_voices = voices.list_available_voices()
-        for voice in all_voices:
-            if voice["name"] not in voices.OPENAI_VOICE_MAPPING.values():
-                voice_list.append({"id": voice["name"], "object": "voice", "name": voice["name"]})
-        return {"object": "list", "data": voice_list}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        data = [
+            {"id": alias, "object": "voice", "name": alias}
+            for alias, preset in voices.OPENAI_VOICE_MAPPING.items()
+            if preset in voices.voice_presets
+        ]
+        mapped_presets = set(voices.OPENAI_VOICE_MAPPING.values())
+        data.extend(
+            {"id": voice["name"], "object": "voice", "name": voice["name"]}
+            for voice in voices.list_available_voices()
+            if voice["name"] not in mapped_presets
+        )
+        return {"object": "list", "data": data}
+    except Exception as exc:
+        logger.exception("Failed to list voices")
+        raise HTTPException(status_code=500, detail="Failed to list voices") from exc
