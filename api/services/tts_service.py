@@ -1,430 +1,376 @@
-"""Core TTS generation service wrapping VibeVoice model."""
+"""Core TTS generation service wrapping the VibeVoice model."""
 
-import threading
-import torch
-import numpy as np
-from typing import Iterator, List, Optional, Union
-from transformers import set_seed
+from __future__ import annotations
+
+import gc
+import json
 import logging
+import os
+import threading
+from contextlib import contextmanager
+from typing import Iterator, List, Optional, Union
 
-def _build_gen_config(do_sample, temperature, top_p):
-    config = {}
-    if do_sample is not None:
-        config["do_sample"] = do_sample
-    if temperature is not None:
-        config["temperature"] = temperature
-    if top_p is not None:
-        config["top_p"] = top_p
-    return config if config else {"do_sample": False}
+import numpy as np
+import torch
+from transformers import set_seed
 
-logger = logging.getLogger(__name__)
-
-from vibevoice.modular.configuration_vibevoice import VibeVoiceConfig
-from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForConditionalGenerationInference
-from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
+from vibevoice.modular.modeling_vibevoice_inference import (
+    VibeVoiceForConditionalGenerationInference,
+)
 from vibevoice.modular.streamer import AudioStreamer
+from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
 
 from api.config import Settings
 from api.utils.audio_utils import trim_trailing_silence
-from api.utils.text_sanitizer import sanitize_text, is_speakable
+from api.utils.text_sanitizer import is_speakable, sanitize_text
+
+logger = logging.getLogger(__name__)
+
+AudioResult = Union[np.ndarray, Iterator[np.ndarray], None]
 
 
 class TTSService:
-    """Service for TTS generation using VibeVoice model."""
+    """Thread-safe lifecycle and inference wrapper for VibeVoice.
+
+    VibeVoice's scheduler stores mutable step state on the model, so all model
+    generation and per-request scheduler/RNG changes must be serialized.
+    """
 
     def __init__(self, settings: Settings):
-        """
-        Initialize TTS service.
-
-        Args:
-            settings: Application settings
-        """
         self.settings = settings
         self.model = None
         self.processor = None
-        self.device = None
+        self.device: Optional[str] = None
         self.dtype = None
         self._model_loaded = False
-        # Serialise concurrent generate() calls — VibeVoice's DPM scheduler
-        # keeps step_index as instance state on the shared model object, so
-        # two parallel inference passes would corrupt each other. With the
-        # `stop_check_fn` cancellation hook below, the first thread releases
-        # this lock within ~one outer-loop step (~100-500ms) when cancelled,
-        # so the next request doesn't hang.
-        self._generate_lock = threading.Lock()
-        # Lazy-load + idle-unload support. When `lazy_load` is True the model
-        # is NOT loaded at startup; the first generate() call triggers
-        # load_model(). After each successful generation, an idle timer of
-        # `idle_timeout_seconds` starts; if no new request arrives in that
-        # window, the model is moved off-GPU and freed, releasing VRAM.
-        self._lazy_load = bool(getattr(settings, "vibevoice_lazy_load", False))
-        self._idle_timeout_seconds = int(getattr(settings, "vibevoice_idle_timeout_seconds", 300))
+
+        # Re-entrant because lazy generation may call load_model while already
+        # holding the inference lock. The same lock also protects unloads.
+        self._generate_lock = threading.RLock()
+        self._load_lock = threading.RLock()
+
+        self._lazy_load = bool(settings.vibevoice_lazy_load)
+        self._idle_timeout_seconds = int(settings.vibevoice_idle_timeout_seconds)
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_timer_lock = threading.Lock()
-    
-    def load_model(self):
-        """Load VibeVoice model and processor. If the model is already loaded
-        (lazy-load path: second request onwards), this is a no-op.
 
-        When `vibevoice_lazy_load` is set, callers should NOT invoke this at
-        startup — let generate_speech() trigger the load on first request.
-        Loading on demand also cancels any pending idle-unload timer.
-        """
-        if self._model_loaded:
-            print("Model already loaded")
-            self._cancel_idle_timer()
-            return
-
-        # Cancel any in-flight unload timer — we're loading now.
-        self._cancel_idle_timer()
-
-        print(f"Loading VibeVoice model from {self.settings.vibevoice_model_path}")
-
-        # Get device and dtype
-        self.device = self.settings.get_device()
-        self.dtype = self.settings.get_dtype()
-        attn_implementation = self.settings.get_attn_implementation()
-
-        print(f"Using device: {self.device}, dtype: {self.dtype}, attention: {attn_implementation}")
-
-        # Load processor
-        self.processor = VibeVoiceProcessor.from_pretrained(self.settings.vibevoice_model_path)
-
-        # Detect pre-quantized model (e.g. ncoder-ai/VibeVoice-Large-AWQ). When the
-        # checkpoint's config.json carries quantization_config, transformers wires the
-        # quant layers automatically inside from_pretrained — nothing else to do.
-        unified_quantized = self._detect_unified_quantization(self.settings.vibevoice_model_path)
-        if unified_quantized:
-            logger.info(
-                f"Detected pre-quantized {unified_quantized} checkpoint — "
-                f"transformers will load quant layers directly via from_pretrained."
-            )
-
-        # Determine if we should load to CPU first for ad-hoc torchao quantization.
-        # Skipped for pre-quantized models (their kernels need CUDA at load time).
-        load_to_cpu_first = (
-            self.settings.vibevoice_quantization
-            and not unified_quantized
-            and str(self.device).startswith("cuda")
-        )
-
-        if load_to_cpu_first:
-            print("Loading model to CPU first for quantization (saves GPU memory)...")
-            # Use sdpa for CPU loading since flash_attention_2 requires CUDA
-            cpu_attn = "sdpa" if attn_implementation == "flash_attention_2" else attn_implementation
-            self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                self.settings.vibevoice_model_path,
-                torch_dtype=self.dtype,
-                device_map="cpu",
-                attn_implementation=cpu_attn,
-                low_cpu_mem_usage=True,
-            )
-            self.model.eval()
-
-            # Apply quantization on CPU
-            self._apply_quantization()
-
-            # Now move to CUDA
-            print("Moving quantized model to CUDA...")
-            self.model = self.model.to("cuda")
-
-            # Log final VRAM usage
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-                vram_final = torch.cuda.memory_allocated() / 1024**3
-                logger.info(f"Final VRAM usage after moving to GPU: {vram_final:.2f} GB")
-        else:
-            # Standard loading path (no quantization or non-CUDA device)
-            try:
-                if self.device == "mps":
-                    self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                        self.settings.vibevoice_model_path,
-                        torch_dtype=self.dtype,
-                        attn_implementation=attn_implementation,
-                        device_map=None,
-                    )
-                    self.model.to("mps")
-                elif str(self.device).startswith("cuda"):
-                    self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                        self.settings.vibevoice_model_path,
-                        torch_dtype=self.dtype,
-                        device_map="cuda",
-                        attn_implementation=attn_implementation,
-                    )
-                else:
-                    self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                        self.settings.vibevoice_model_path,
-                        torch_dtype=self.dtype,
-                        device_map="cpu",
-                        attn_implementation=attn_implementation,
-                    )
-            except Exception as e:
-                if attn_implementation == 'flash_attention_2':
-                    print(f"Flash attention failed: {e}")
-                    print("Falling back to SDPA attention")
-                    attn_implementation = "sdpa"
-
-                    if self.device == "mps":
-                        self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                            self.settings.vibevoice_model_path,
-                            torch_dtype=self.dtype,
-                            attn_implementation=attn_implementation,
-                            device_map=None,
-                        )
-                        self.model.to("mps")
-                    elif str(self.device).startswith("cuda"):
-                        self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                            self.settings.vibevoice_model_path,
-                            torch_dtype=self.dtype,
-                            device_map="cuda",
-                            attn_implementation=attn_implementation,
-                        )
-                    else:
-                        self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                            self.settings.vibevoice_model_path,
-                            torch_dtype=self.dtype,
-                            device_map="cpu",
-                            attn_implementation=attn_implementation,
-                        )
-                else:
-                    raise e
-
-            self.model.eval()
-
-        # Apply torch.compile for optimized inference
-        if self.settings.torch_compile:
-            try:
-                compile_mode = self.settings.torch_compile_mode
-                self.model = torch.compile(self.model, mode=compile_mode, dynamic=True)
-                print(f"Model compiled with torch.compile(mode='{compile_mode}', dynamic=True)")
-            except Exception as e:
-                print(f"torch.compile() failed: {e}, continuing without compilation")
-
-        # Configure noise scheduler
-        self.model.model.noise_scheduler = self.model.model.noise_scheduler.from_config(
-            self.model.model.noise_scheduler.config,
-            algorithm_type='sde-dpmsolver++',
-            beta_schedule='squaredcos_cap_v2'
-        )
-        
-        # Set inference steps
-        self.model.set_ddpm_inference_steps(num_steps=self.settings.vibevoice_inference_steps)
-        
-        self._model_loaded = True
-        print("Model loaded successfully")
-
-    def _apply_quantization(self):
-        """Apply runtime torchao quantization to the model based on settings.
-
-        Supported VIBEVOICE_QUANTIZATION values:
-          - "int8_torchao"          : INT8 weight-only (slowest matmul on Ampere — dequant overhead)
-          - "int8_dynamic_torchao"  : W8A8 dynamic activation+weight quant — uses 3090 INT8 tensor cores
-          - "int4_torchao"          : INT4 weight-only (smallest, biggest dequant overhead)
-
-        For AWQ-INT4 use VIBEVOICE_MODEL_PATH=ncoder-ai/VibeVoice-Large-AWQ instead;
-        transformers auto-loads its embedded quantization_config via from_pretrained.
-        """
-        quant_method = self.settings.vibevoice_quantization
-
-        if quant_method == "int8_torchao":
-            self._apply_torchao_quant(bits=8, mode="weight_only")
-        elif quant_method == "int8_dynamic_torchao":
-            self._apply_torchao_quant(bits=8, mode="dynamic")
-        elif quant_method == "int4_torchao":
-            self._apply_torchao_quant(bits=4, mode="weight_only")
-        else:
-            logger.warning(f"Unknown quantization method: {quant_method}, skipping quantization")
-
-    @staticmethod
-    def _detect_unified_quantization(model_path: str) -> str | None:
-        """Read config.json from a local dir or HF hub model and return the
-        `quant_method` string if the checkpoint is pre-quantized, else None.
-
-        The unified VibeVoice-Large-AWQ checkpoint embeds quantization_config in
-        its config.json so transformers wires AWQ layers automatically — no
-        separate graft step.
-        """
-        import os, json
-        try:
-            if os.path.isdir(model_path):
-                cfg_path = os.path.join(model_path, "config.json")
-                if not os.path.isfile(cfg_path):
-                    return None
-                with open(cfg_path, "r") as f:
-                    cfg = json.load(f)
-            else:
-                # HF hub model id — fetch config.json without downloading weights
-                from huggingface_hub import hf_hub_download
-                cfg_path = hf_hub_download(model_path, filename="config.json")
-                with open(cfg_path, "r") as f:
-                    cfg = json.load(f)
-            qcfg = cfg.get("quantization_config")
-            if qcfg and isinstance(qcfg, dict):
-                return qcfg.get("quant_method")
-        except Exception as e:
-            logger.debug(f"Could not probe quantization_config for {model_path}: {e}")
-        return None
-
-    def _apply_torchao_quant(self, bits: int = 8, mode: str = "weight_only"):
-        """
-        Apply torchao quantization to the language model.
-
-        This selectively quantizes only the LLM (Qwen2) decoder and lm_head,
-        keeping audio components (tokenizers, diffusion head, connectors) at full precision.
-
-        Args:
-            bits: 8 for INT8 (~40% VRAM reduction) or 4 for INT4 (~60% VRAM reduction, smaller).
-            mode: "weight_only" — weights INT8/INT4, activations FP16. Bandwidth win, slow on
-                  Ampere because of dequant→FP16 before matmul.
-                  "dynamic" — weights INT8 + activations dynamically quantized to INT8 per batch.
-                  Uses 3090's INT8 tensor cores (568 TOPS) for the matmul itself, no dequant.
-                  Only supported with bits=8.
-        """
-        try:
-            from torchao.quantization import (
-                quantize_,
-                int8_weight_only,
-                int4_weight_only,
-                int8_dynamic_activation_int8_weight,
-            )
-        except ImportError:
-            logger.error(
-                "torchao not installed. Install with: pip install torchao\n"
-                "Falling back to full precision."
-            )
-            return
-
-        # Select quantization function based on bits + mode
-        if mode == "dynamic" and bits == 8:
-            quant_fn = int8_dynamic_activation_int8_weight()
-            quant_name = "INT8 dynamic activation + weight (W8A8)"
-        elif bits == 4:
-            quant_fn = int4_weight_only()
-            quant_name = "INT4 weight-only"
-        else:
-            quant_fn = int8_weight_only()
-            quant_name = "INT8 weight-only"
-
-        # Check if model is on CUDA (for memory logging)
-        model_on_cuda = next(self.model.parameters()).is_cuda
-
-        logger.info(f"Applying torchao {quant_name} weight-only quantization...")
-        if model_on_cuda:
-            logger.info("Model is on CUDA - quantizing in place")
-        else:
-            logger.info("Model is on CPU - quantizing before moving to GPU (saves VRAM)")
-
-        # Quantize only the language model (Qwen2 decoder) - this is the largest component
-        # The audio components (acoustic_tokenizer, semantic_tokenizer, prediction_head, connectors)
-        # are kept at full precision to maintain audio quality
-        try:
-            logger.info("Quantizing language_model (Qwen2 decoder)...")
-            quantize_(self.model.model.language_model, quant_fn)
-
-            logger.info("Quantizing lm_head...")
-            quantize_(self.model.lm_head, quant_fn)
-
-        except Exception as e:
-            logger.error(f"Failed to quantize model: {e}")
-            logger.info("Continuing with full precision model")
-            return
-
-        logger.info(f"{quant_name} quantization applied successfully")
-
-        # Force garbage collection
-        import gc
-        gc.collect()
+        self._request_count = 0
+        self._request_count_lock = threading.Lock()
 
     @property
     def is_loaded(self) -> bool:
-        """Check if model is loaded."""
         return self._model_loaded
 
-    def unload_model(self):
-        """Move the model and processor out of GPU/CPU memory and release
-        VRAM. Safe to call multiple times. Used by the idle-unload timer."""
-        if not self._model_loaded:
-            return
+    @property
+    def is_busy(self) -> bool:
+        with self._request_count_lock:
+            return self._request_count > 0
 
-        logger.info("Unloading VibeVoice model (idle timeout reached).")
+    def _request_started(self) -> None:
+        with self._request_count_lock:
+            self._request_count += 1
+        self._cancel_idle_timer()
 
-        # Move model off GPU first, then drop references.
+    def _request_finished(self) -> None:
+        with self._request_count_lock:
+            self._request_count = max(0, self._request_count - 1)
+            idle = self._request_count == 0
+        if idle:
+            self._start_idle_timer()
+
+    @contextmanager
+    def request_context(self):
+        """Keep the model busy for a whole multi-chunk API request.
+
+        Individual chunk generations still track themselves, but the outer count
+        prevents idle-timer creation and unload races between adjacent chunks.
+        """
+        self._request_started()
         try:
-            if self.model is not None and str(self.device).startswith("cuda") and torch.cuda.is_available():
-                self.model.to("cpu")
-        except Exception as e:
-            logger.warning(f"Could not move model to CPU during unload: {e}")
+            yield
+        finally:
+            self._request_finished()
 
+    def load_model(self) -> None:
+        """Load the model exactly once, safely under concurrent first requests."""
+        with self._generate_lock, self._load_lock:
+            if self._model_loaded:
+                self._cancel_idle_timer()
+                return
+
+            self._cancel_idle_timer()
+            self.device = self.settings.get_device()
+            self.dtype = self.settings.get_dtype()
+            attention = self.settings.get_attn_implementation()
+
+            logger.info(
+                "Loading VibeVoice model from %s (device=%s, dtype=%s, attention=%s)",
+                self.settings.vibevoice_model_path,
+                self.device,
+                self.dtype,
+                attention,
+            )
+
+            try:
+                self.processor = VibeVoiceProcessor.from_pretrained(
+                    self.settings.vibevoice_model_path
+                )
+                unified_quantized = self._detect_unified_quantization(
+                    self.settings.vibevoice_model_path
+                )
+                if unified_quantized:
+                    logger.info(
+                        "Detected pre-quantized %s checkpoint; using embedded quantization config",
+                        unified_quantized,
+                    )
+
+                load_to_cpu_first = bool(
+                    self.settings.vibevoice_quantization
+                    and not unified_quantized
+                    and self.device.startswith("cuda")
+                )
+
+                if load_to_cpu_first:
+                    cpu_attention = "sdpa" if attention == "flash_attention_2" else attention
+                    self.model = self._from_pretrained(
+                        device="cpu",
+                        attention=cpu_attention,
+                    )
+                    self.model.eval()
+                    self._apply_quantization()
+                    logger.info("Moving runtime-quantized model to %s", self.device)
+                    self.model = self.model.to(self.device)
+                else:
+                    try:
+                        self.model = self._from_pretrained(
+                            device=self.device,
+                            attention=attention,
+                        )
+                    except Exception:
+                        if attention != "flash_attention_2":
+                            raise
+                        logger.exception(
+                            "Flash Attention model load failed; retrying with SDPA"
+                        )
+                        self._drop_model_references(clear_processor=False)
+                        self._clear_cuda_cache()
+                        self.model = self._from_pretrained(
+                            device=self.device,
+                            attention="sdpa",
+                        )
+                    self.model.eval()
+
+                # Configure scheduler before optional compilation. Per-request step
+                # overrides are still applied inside the inference lock.
+                self.model.model.noise_scheduler = (
+                    self.model.model.noise_scheduler.from_config(
+                        self.model.model.noise_scheduler.config,
+                        algorithm_type="sde-dpmsolver++",
+                        beta_schedule="squaredcos_cap_v2",
+                    )
+                )
+                self.model.set_ddpm_inference_steps(
+                    num_steps=self.settings.vibevoice_inference_steps
+                )
+
+                if self.settings.torch_compile:
+                    try:
+                        self.model = torch.compile(
+                            self.model,
+                            mode=self.settings.torch_compile_mode,
+                            dynamic=True,
+                        )
+                        logger.info(
+                            "Enabled torch.compile(mode=%s, dynamic=True)",
+                            self.settings.torch_compile_mode,
+                        )
+                    except Exception:
+                        logger.exception("torch.compile failed; continuing eagerly")
+
+                self._model_loaded = True
+                logger.info("VibeVoice model loaded successfully")
+            except Exception:
+                self._drop_model_references(clear_processor=True)
+                self._model_loaded = False
+                self._clear_cuda_cache()
+                raise
+
+    def _from_pretrained(self, device: str, attention: str):
+        kwargs = {
+            "torch_dtype": self.dtype,
+            "attn_implementation": attention,
+            "low_cpu_mem_usage": True,
+        }
+        if device.startswith("cuda"):
+            kwargs["device_map"] = {"": device}
+            return VibeVoiceForConditionalGenerationInference.from_pretrained(
+                self.settings.vibevoice_model_path,
+                **kwargs,
+            )
+
+        kwargs["device_map"] = "cpu"
+        model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+            self.settings.vibevoice_model_path,
+            **kwargs,
+        )
+        if device == "mps":
+            model = model.to("mps")
+        return model
+
+    def _drop_model_references(self, *, clear_processor: bool) -> None:
         self.model = None
-        self.processor = None
-        self._model_loaded = False
+        if clear_processor:
+            self.processor = None
+        gc.collect()
 
-        # Aggressively release VRAM / RAM.
+    def unload_model(self, *, blocking: bool = True, reason: str = "manual request") -> bool:
+        """Release model memory without racing active or queued inference.
+
+        Returns ``False`` only when ``blocking=False`` and inference currently owns
+        the lock. Idle timers use the non-blocking mode and retry later.
+        """
+        if not blocking and self.is_busy:
+            return False
+
+        acquired = self._generate_lock.acquire(blocking=blocking)
+        if not acquired:
+            return False
+
         try:
-            import gc
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
-        except Exception as e:
-            logger.warning(f"Cache cleanup during unload failed: {e}")
+            with self._load_lock:
+                self._cancel_idle_timer()
+                if not self._model_loaded:
+                    return True
 
-    def _start_idle_timer(self):
-        """Start (or restart) the idle-unload timer. When it fires, the model
-        is moved off GPU and freed. Only active when `vibevoice_lazy_load` is
-        True and `vibevoice_idle_timeout_seconds` > 0."""
+                logger.info("Unloading VibeVoice model (%s)", reason)
+                try:
+                    if (
+                        self.model is not None
+                        and self.device
+                        and self.device.startswith("cuda")
+                        and torch.cuda.is_available()
+                    ):
+                        self.model.to("cpu")
+                except Exception:
+                    logger.exception("Could not move model to CPU before unload")
+
+                self._drop_model_references(clear_processor=True)
+                self._model_loaded = False
+                self._clear_cuda_cache()
+                return True
+        finally:
+            self._generate_lock.release()
+
+    def _clear_cuda_cache(self) -> None:
+        if not torch.cuda.is_available():
+            return
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+        except Exception:
+            logger.exception("CUDA cache cleanup failed")
+
+    def _ensure_loaded_locked(self) -> None:
+        if self._model_loaded:
+            return
         if not self._lazy_load:
-            return
-        if self._idle_timeout_seconds <= 0:
-            return
+            raise RuntimeError("Model is not loaded; call /v1/vibevoice/preload first")
+        logger.info("Lazy-loading VibeVoice for the first request")
+        self.load_model()
 
+    def _start_idle_timer(self) -> None:
+        if not self._lazy_load or self._idle_timeout_seconds <= 0 or self.is_busy:
+            return
         with self._idle_timer_lock:
             self._cancel_idle_timer_unlocked()
-            timer = threading.Timer(
-                self._idle_timeout_seconds,
-                self._on_idle_timeout,
-            )
+            timer = threading.Timer(self._idle_timeout_seconds, self._on_idle_timeout)
             timer.daemon = True
             self._idle_timer = timer
             timer.start()
-            logger.debug(
-                f"Idle-unload timer started: {self._idle_timeout_seconds}s"
-            )
 
-    def _cancel_idle_timer(self):
+    def _cancel_idle_timer(self) -> None:
         with self._idle_timer_lock:
             self._cancel_idle_timer_unlocked()
 
-    def _cancel_idle_timer_unlocked(self):
+    def _cancel_idle_timer_unlocked(self) -> None:
         if self._idle_timer is not None:
-            try:
-                self._idle_timer.cancel()
-            except Exception:
-                pass
+            self._idle_timer.cancel()
             self._idle_timer = None
 
-    def _on_idle_timeout(self):
-        """Timer callback: unload the model. Re-checks that no new request
-        snuck in between the timer firing and acquiring the unload path."""
+    def _on_idle_timeout(self) -> None:
         with self._idle_timer_lock:
             self._idle_timer = None
 
         if not self._model_loaded:
             return
-        # If another request is currently generating, defer — its finally
-        # block will restart the timer on completion.
-        if self._generate_lock.locked():
-            logger.debug(
-                "Idle timeout fired while a generation is in progress; "
-                "deferring unload."
-            )
+        if self.is_busy or not self.unload_model(
+            blocking=False, reason=f"idle for {self._idle_timeout_seconds}s"
+        ):
             self._start_idle_timer()
-            return
 
-        logger.info(
-            f"No requests for {self._idle_timeout_seconds}s — unloading model."
+    def _prepare_inputs(self, text: str, voice_samples: List[np.ndarray]) -> dict:
+        inputs = self.processor(
+            text=[text],
+            voice_samples=[voice_samples],
+            padding=True,
+            return_tensors="pt",
+            return_attention_mask=True,
         )
-        self.unload_model()
+        target = self._execution_device()
+        for key, value in inputs.items():
+            if torch.is_tensor(value):
+                inputs[key] = value.to(
+                    target,
+                    non_blocking=target.type == "cuda",
+                )
+        return inputs
+
+    def _execution_device(self) -> torch.device:
+        if self.model is not None:
+            try:
+                for parameter in self.model.parameters():
+                    if parameter.device.type != "meta":
+                        return parameter.device
+            except (AttributeError, StopIteration):
+                pass
+        return torch.device(self.device or "cpu")
+
+    def _set_generation_state(self, inference_steps: Optional[int], seed: Optional[int]) -> None:
+        # Always apply a resolved step count. This prevents a custom native request
+        # from leaking its scheduler setting into later OpenAI requests.
+        resolved_steps = (
+            inference_steps
+            if inference_steps is not None
+            else self.settings.vibevoice_inference_steps
+        )
+        self.model.set_ddpm_inference_steps(num_steps=resolved_steps)
+        if seed is not None:
+            set_seed(seed)
+
+    def _build_generation_config(
+        self,
+        do_sample: Optional[bool],
+        temperature: Optional[float],
+        top_p: Optional[float],
+    ) -> dict:
+        if do_sample is None and (temperature is not None or top_p is not None):
+            sampling = True
+        else:
+            sampling = self.settings.default_do_sample if do_sample is None else do_sample
+        config: dict = {"do_sample": sampling}
+        if sampling:
+            config.update(
+                temperature=(
+                    self.settings.default_temperature
+                    if temperature is None
+                    else temperature
+                ),
+                top_p=self.settings.default_top_p if top_p is None else top_p,
+                top_k=self.settings.default_top_k,
+            )
+        if self.settings.default_repetition_penalty != 1.0:
+            config["repetition_penalty"] = self.settings.default_repetition_penalty
+        return config
 
     def generate_speech(
         self,
@@ -433,250 +379,235 @@ class TTSService:
         cfg_scale: float = 1.3,
         inference_steps: Optional[int] = None,
         seed: Optional[int] = None,
-        stream: bool = False, do_sample: Optional[bool] = None, temperature: Optional[float] = None, top_p: Optional[float] = None,
+        stream: bool = False,
+        do_sample: Optional[bool] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
         cancel_event: Optional[threading.Event] = None,
-    ) -> Union[np.ndarray, Iterator[np.ndarray]]:
-        """
-        Generate speech from text.
-
-        Args:
-            text: Input text (formatted with Speaker labels)
-            voice_samples: List of voice sample arrays
-            cfg_scale: Classifier-free guidance scale
-            inference_steps: Number of diffusion steps (None = use default)
-            seed: Random seed for reproducibility
-            stream: Whether to return streaming iterator
-            cancel_event: Optional threading.Event for cooperative cancellation.
-                When set (e.g. by a disconnect-detection task), the model's
-                undocumented `stop_check_fn` parameter trips at the next outer
-                generation step (~100-500ms) and the lock is released so the
-                next request can proceed immediately.
-
-        Returns:
-            Generated audio array or iterator of audio chunks
-        """
-        # Anti-padding guard: if nothing speakable remains (prompt was emoji/
-        # symbols only, or sanitization emptied it), skip generation. An empty
-        # prompt is a classic trigger for VibeVoice running on and padding the
-        # output. Both routers already treat a None result as "no audio".
+    ) -> AudioResult:
+        """Generate speech, serializing all model state mutations."""
         if not text or not text.strip():
-            logger.info("No speakable text — skipping generation (avoids padding)")
             return iter(()) if stream else None
 
-        if not self._model_loaded:
-            if not self._lazy_load:
-                raise RuntimeError("Model not loaded. Call load_model() first.")
-            # Lazy-load path: load on first request, then proceed.
-            logger.info("Lazy-load: model not in memory, loading on first request...")
-            self.load_model()
-
-        # Set seed if provided
-        if seed is not None:
-            set_seed(seed)
-
-        # Set inference steps if provided
-        if inference_steps is not None:
-            self.model.set_ddpm_inference_steps(num_steps=inference_steps)
-
-        # Process inputs
-        inputs = self.processor(
-            text=[text],
-            voice_samples=[voice_samples],
-            padding=True,
-            return_tensors="pt",
-            return_attention_mask=True,
-        )
-
-        # Move to device
-        target_device = self.device if self.device in ("cuda", "mps") else "cpu"
-        for k, v in inputs.items():
-            if torch.is_tensor(v):
-                inputs[k] = v.to(target_device)
-
-        # Build the stop_check_fn closure if a cancel event was provided.
-        # VibeVoice's model.generate() (modular/modeling_vibevoice_inference.py
-        # line ~432) calls this at the top of every outer step in the diffusion
-        # loop and exits cleanly when it returns True.
-        stop_check_fn = (lambda: cancel_event.is_set()) if cancel_event is not None else None
-
         if stream:
-            # Return streaming iterator (lock acquired inside _generate_streaming)
-            return self._generate_streaming(inputs, cfg_scale, cancel_event=cancel_event)
-        else:
-            # Generate all at once. Hold the lock so DPM scheduler state isn't
-            # corrupted by a parallel call. The lock releases naturally when
-            # generation finishes OR cancel fires.
-            try:
-                with self._generate_lock, torch.no_grad():
+            return self._generate_streaming(
+                text=text,
+                voice_samples=voice_samples,
+                cfg_scale=cfg_scale,
+                inference_steps=inference_steps,
+                seed=seed,
+                do_sample=do_sample,
+                temperature=temperature,
+                top_p=top_p,
+                cancel_event=cancel_event,
+            )
+
+        self._request_started()
+        try:
+            with self._generate_lock, torch.inference_mode():
+                self._ensure_loaded_locked()
+                inputs = self._prepare_inputs(text, voice_samples)
+                self._set_generation_state(inference_steps, seed)
+                stop_check_fn = (
+                    (lambda: cancel_event.is_set())
+                    if cancel_event is not None
+                    else None
+                )
+
+                try:
                     outputs = self.model.generate(
                         **inputs,
                         max_new_tokens=self.settings.vibevoice_max_new_tokens,
                         cfg_scale=cfg_scale,
                         tokenizer=self.processor.tokenizer,
-                        generation_config=_build_gen_config(do_sample, temperature, top_p),
+                        generation_config=self._build_generation_config(
+                            do_sample, temperature, top_p
+                        ),
                         stop_check_fn=stop_check_fn,
                         return_speech=True,
                         verbose=False,
                         refresh_negative=True,
-                        show_progress_bar=False
+                        show_progress_bar=False,
                     )
-            finally:
-                # Release CUDA cache regardless of outcome (success or cancel).
-                try:
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                except Exception as e:
-                    logger.warning(f"torch.cuda.empty_cache() failed: {e}")
+                except Exception as exc:
+                    self._handle_generation_exception(exc)
+                    raise
 
-            # If cancellation tripped, return None so the caller knows
-            if cancel_event is not None and cancel_event.is_set():
-                logger.info("Non-streaming generation cancelled by event")
-                return None
+                if cancel_event is not None and cancel_event.is_set():
+                    return None
+                return self._extract_audio(outputs)
+        finally:
+            self._request_finished()
 
-            # Get audio output
-            if outputs.speech_outputs and outputs.speech_outputs[0] is not None:
-                audio = outputs.speech_outputs[0]
-                if torch.is_tensor(audio):
-                    # Convert bfloat16 to float32 before converting to numpy
-                    if audio.dtype == torch.bfloat16:
-                        audio = audio.float()
-                    audio = audio.cpu().numpy()
-                # Trim trailing silence — VibeVoice intermittently fails to emit its
-                # stop token and appends silent frames up to max_new_tokens (~30s).
-                if getattr(self.settings, "vibevoice_trim_silence", True):
-                    _n0 = np.asarray(audio).reshape(-1).size
-                    audio = trim_trailing_silence(audio, sample_rate=24000)
-                    _n1 = np.asarray(audio).reshape(-1).size
-                    if (_n0 - _n1) > 0.5 * 24000:
-                        logger.info(
-                            f"Trimmed trailing silence: {_n0/24000:.1f}s -> {_n1/24000:.1f}s"
-                        )
-                # Successful generation: (re)start the idle-unload timer.
-                self._start_idle_timer()
-                return audio
-            else:
-                raise RuntimeError("No audio generated")
-    
+    def _extract_audio(self, outputs) -> np.ndarray:
+        speech_outputs = getattr(outputs, "speech_outputs", None)
+        if not speech_outputs or speech_outputs[0] is None:
+            raise RuntimeError("No audio generated")
+
+        audio = speech_outputs[0]
+        if torch.is_tensor(audio):
+            audio = audio.float().cpu().numpy()
+        audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+
+        if self.settings.vibevoice_trim_silence:
+            original_size = audio.size
+            audio = trim_trailing_silence(audio, sample_rate=24000)
+            removed = original_size - audio.size
+            if removed > 12000:
+                logger.info(
+                    "Trimmed %.2fs of trailing silence",
+                    removed / 24000.0,
+                )
+        return audio
+
+    def _handle_generation_exception(self, exc: Exception) -> None:
+        is_oom = isinstance(exc, torch.cuda.OutOfMemoryError) or "out of memory" in str(exc).lower()
+        if is_oom:
+            logger.error("CUDA out of memory during generation")
+            self._clear_cuda_cache()
+
     def _generate_streaming(
         self,
-        inputs: dict,
+        *,
+        text: str,
+        voice_samples: List[np.ndarray],
         cfg_scale: float,
-        cancel_event: Optional[threading.Event] = None,
+        inference_steps: Optional[int],
+        seed: Optional[int],
+        do_sample: Optional[bool],
+        temperature: Optional[float],
+        top_p: Optional[float],
+        cancel_event: Optional[threading.Event],
     ) -> Iterator[np.ndarray]:
-        """
-        Generate speech with streaming. Supports cooperative cancellation
-        via the optional cancel_event using VibeVoice's `stop_check_fn`
-        (checked at every outer-loop step ~ 100-500ms granularity).
+        """Stream model audio while preserving the same locked state semantics."""
+        event = cancel_event or threading.Event()
+        streamer = AudioStreamer(batch_size=1, stop_signal=None, timeout=None)
+        errors: list[BaseException] = []
+        self._request_started()
 
-        Args:
-            inputs: Processed model inputs
-            cfg_scale: CFG scale
-            cancel_event: When set, the model exits at its next outer-loop
-                step, AudioStreamer.end() is called, and the generation
-                thread is joined with a timeout.
-
-        Yields:
-            Audio chunks as numpy arrays
-        """
-        # Create audio streamer
-        audio_streamer = AudioStreamer(
-            batch_size=1,
-            stop_signal=None,
-            timeout=None
-        )
-
-        # No-op cancel_event if none was provided so the rest of the path is uniform
-        if cancel_event is None:
-            cancel_event = threading.Event()
-
-        # stop_check_fn is what makes cancellation FAST. VibeVoice's
-        # model.generate() checks this at the top of every outer step
-        # in modular/modeling_vibevoice_inference.py around line 432.
-        stop_check_fn = lambda: cancel_event.is_set()
-
-        def generate():
+        def worker() -> None:
             try:
-                # Lock guards shared scheduler state across concurrent stream requests.
-                # Released within ~one outer-step on cancel because of stop_check_fn.
-                with self._generate_lock, torch.no_grad():
+                with self._generate_lock, torch.inference_mode():
+                    self._ensure_loaded_locked()
+                    inputs = self._prepare_inputs(text, voice_samples)
+                    self._set_generation_state(inference_steps, seed)
                     self.model.generate(
                         **inputs,
                         max_new_tokens=self.settings.vibevoice_max_new_tokens,
                         cfg_scale=cfg_scale,
                         tokenizer=self.processor.tokenizer,
-                        generation_config=_build_gen_config(do_sample, temperature, top_p),
-                        audio_streamer=audio_streamer,
-                        stop_check_fn=stop_check_fn,
+                        generation_config=self._build_generation_config(
+                            do_sample, temperature, top_p
+                        ),
+                        audio_streamer=streamer,
+                        stop_check_fn=lambda: event.is_set(),
                         return_speech=True,
                         verbose=False,
                         refresh_negative=True,
-                        show_progress_bar=False
+                        show_progress_bar=False,
                     )
-            except Exception as e:
-                logger.error(f"Generation thread error: {e}")
+            except BaseException as exc:  # propagate worker failures to the consumer
+                errors.append(exc)
+                if isinstance(exc, Exception):
+                    self._handle_generation_exception(exc)
+                logger.exception("Streaming generation worker failed")
             finally:
-                # Always release the consumer (yields stop_signal in queues)
-                # so the for-loop below exits even on cancel/error.
-                audio_streamer.end()
+                streamer.end()
+                self._request_finished()
 
-        generation_thread = threading.Thread(target=generate, daemon=True)
-        generation_thread.start()
-
-        # Yield chunks as they arrive. We poll cancel_event between chunks
-        # so we exit promptly even before the streamer end signal arrives.
+        thread = threading.Thread(target=worker, daemon=True, name="vibevoice-stream")
         try:
-            audio_stream = audio_streamer.get_stream(0)
-            for chunk in audio_stream:
-                if cancel_event.is_set():
-                    logger.info("Streaming consumer detected cancel event, breaking")
+            thread.start()
+        except BaseException:
+            self._request_finished()
+            raise
+        completed = False
+
+        try:
+            for chunk in streamer.get_stream(0):
+                if event.is_set():
                     break
                 if torch.is_tensor(chunk):
-                    # Convert bfloat16 to float32 before converting to numpy
-                    if chunk.dtype == torch.bfloat16:
-                        chunk = chunk.float()
-                    chunk = chunk.cpu().numpy()
-                yield chunk
+                    chunk = chunk.float().cpu().numpy()
+                yield np.asarray(chunk, dtype=np.float32).reshape(-1)
+
+            if errors and not event.is_set():
+                raise errors[0]
+            completed = True
         finally:
-            # Whether we exit via normal completion, cancel, or upstream
-            # exception, signal the worker and wait for it to release the lock.
-            cancel_event.set()
-            # 5s is plenty: stop_check_fn fires at next outer step (~100-500ms
-            # for our 5-step diffusion config), then the lock releases.
-            generation_thread.join(timeout=5.0)
-            if generation_thread.is_alive():
-                logger.warning(
-                    "Generation thread still alive 5s after cancel — "
-                    "model.generate() may not be honouring stop_check_fn"
-                )
-            try:
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except Exception as e:
-                logger.warning(f"torch.cuda.empty_cache() failed: {e}")
-    
+            if not completed:
+                event.set()
+            thread.join(timeout=5.0)
+            if thread.is_alive():
+                logger.warning("Streaming worker did not stop within five seconds")
+
+    def _apply_quantization(self) -> None:
+        method = self.settings.vibevoice_quantization
+        if method == "int8_torchao":
+            self._apply_torchao_quant(bits=8, mode="weight_only")
+        elif method == "int8_dynamic_torchao":
+            self._apply_torchao_quant(bits=8, mode="dynamic")
+        elif method == "int4_torchao":
+            self._apply_torchao_quant(bits=4, mode="weight_only")
+        elif method:
+            logger.warning("Unknown quantization method %r; using full precision", method)
+
+    @staticmethod
+    def _detect_unified_quantization(model_path: str) -> Optional[str]:
+        try:
+            if os.path.isdir(model_path):
+                config_path = os.path.join(model_path, "config.json")
+                if not os.path.isfile(config_path):
+                    return None
+            else:
+                from huggingface_hub import hf_hub_download
+
+                config_path = hf_hub_download(model_path, filename="config.json")
+
+            with open(config_path, "r", encoding="utf-8") as handle:
+                config = json.load(handle)
+            quantization = config.get("quantization_config")
+            if isinstance(quantization, dict):
+                return quantization.get("quant_method")
+        except Exception:
+            logger.debug("Could not inspect quantization config for %s", model_path, exc_info=True)
+        return None
+
+    def _apply_torchao_quant(self, bits: int = 8, mode: str = "weight_only") -> None:
+        try:
+            from torchao.quantization import (
+                int4_weight_only,
+                int8_dynamic_activation_int8_weight,
+                int8_weight_only,
+                quantize_,
+            )
+        except ImportError:
+            logger.warning("torchao is not installed; skipping runtime quantization")
+            return
+
+        if mode == "dynamic" and bits == 8:
+            quantizer = int8_dynamic_activation_int8_weight()
+            name = "INT8 dynamic activation + weight"
+        elif bits == 4:
+            quantizer = int4_weight_only()
+            name = "INT4 weight-only"
+        else:
+            quantizer = int8_weight_only()
+            name = "INT8 weight-only"
+
+        try:
+            logger.info("Applying torchao %s quantization to the language model", name)
+            quantize_(self.model.model.language_model, quantizer)
+            quantize_(self.model.lm_head, quantizer)
+            gc.collect()
+        except Exception:
+            logger.exception("Runtime quantization failed; continuing with current weights")
+
     def format_script_for_single_speaker(self, text: str, speaker_id: int = 0) -> str:
-        """
-        Format plain text as single-speaker script.
-        
-        Args:
-            text: Plain text input
-            speaker_id: Speaker ID to use
-            
-        Returns:
-            Formatted script
-        """
-        # Split into sentences/paragraphs, sanitizing each line before it reaches
-        # the model. Sanitization strips emoji / markup / stray symbols and
-        # guarantees terminal punctuation, which makes VibeVoice far less likely
-        # to miss its stop token and pad the clip with trailing silence. Lines
-        # with nothing speakable left (e.g. emoji-only) are dropped.
-        lines = text.strip().split('\n')
-        formatted_lines = []
-
-        for line in lines:
-            line = sanitize_text(line)
-            if line and is_speakable(line):
-                formatted_lines.append(f"Speaker {speaker_id}: {line}")
-
-        return '\n'.join(formatted_lines)
-
+        """Sanitize lines and format them for VibeVoice's speaker syntax."""
+        formatted: list[str] = []
+        for line in text.strip().splitlines():
+            cleaned = sanitize_text(line)
+            if cleaned and is_speakable(cleaned):
+                formatted.append(f"Speaker {speaker_id}: {cleaned}")
+        return "\n".join(formatted)

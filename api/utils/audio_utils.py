@@ -1,224 +1,165 @@
 """Audio format conversion and processing utilities."""
 
-import io
-import numpy as np
-import torch
-from typing import Union, Literal
-from pydub import AudioSegment
-import soundfile as sf
+from __future__ import annotations
 
+import io
+from typing import Literal, Union
+
+import numpy as np
+import soundfile as sf
+import torch
+from pydub import AudioSegment
 
 AudioFormat = Literal["mp3", "opus", "aac", "flac", "wav", "pcm", "m4a"]
+AudioArray = Union[np.ndarray, torch.Tensor]
 
 
-def convert_to_16_bit_wav(audio: Union[np.ndarray, torch.Tensor]) -> np.ndarray:
-    """
-    Convert audio to 16-bit PCM format.
-    
-    Args:
-        audio: Audio data as numpy array or torch tensor
-        
-    Returns:
-        16-bit PCM audio as numpy array
-    """
-    # Convert tensor to numpy if needed
+def _to_mono_float32(audio: AudioArray) -> np.ndarray:
+    """Convert tensors/arrays to a finite, contiguous mono float32 vector."""
     if torch.is_tensor(audio):
-        audio = audio.detach().cpu().numpy()
-    
-    # Ensure numpy array
-    audio = np.array(audio, dtype=np.float32)
-    
-    # Ensure 1D
-    if len(audio.shape) > 1:
-        audio = audio.squeeze()
-    
-    # Normalize to range [-1, 1] if needed
-    if np.max(np.abs(audio)) > 1.0:
-        audio = audio / np.max(np.abs(audio))
-    
-    # Scale to 16-bit integer range
-    audio_16bit = (audio * 32767).astype(np.int16)
-    
-    return audio_16bit
+        audio = audio.detach().float().cpu().numpy()
+
+    array = np.asarray(audio, dtype=np.float32)
+    if array.ndim == 0:
+        array = array.reshape(1)
+
+    array = np.squeeze(array)
+    if array.ndim > 1:
+        # Model outputs are commonly [1, samples], while decoded audio is usually
+        # [samples, channels]. Select the likely channel axis conservatively.
+        channel_axis = 0 if array.shape[0] <= 8 and array.shape[0] < array.shape[-1] else -1
+        array = array.mean(axis=channel_axis)
+
+    array = np.ascontiguousarray(array.reshape(-1), dtype=np.float32)
+    if not np.isfinite(array).all():
+        array = np.nan_to_num(array, nan=0.0, posinf=1.0, neginf=-1.0)
+    return array
+
+
+def convert_to_16_bit_wav(audio: AudioArray) -> np.ndarray:
+    """Convert audio to clipped 16-bit PCM without failing on empty arrays."""
+    array = _to_mono_float32(audio)
+    if array.size == 0:
+        return np.empty(0, dtype=np.int16)
+
+    peak = float(np.max(np.abs(array)))
+    if peak > 1.0:
+        array = array / peak
+    array = np.clip(array, -1.0, 1.0)
+    return np.rint(array * 32767.0).astype(np.int16)
+
+
+def adjust_audio_speed(audio: AudioArray, speed: float) -> np.ndarray:
+    """Change playback tempo while preserving pitch.
+
+    ``librosa.effects.time_stretch`` is only imported when a non-default speed is
+    requested, so the common path has no extra startup cost.
+    """
+    array = _to_mono_float32(audio)
+    if array.size == 0 or abs(speed - 1.0) < 1e-6:
+        return array
+    if not 0.25 <= speed <= 4.0:
+        raise ValueError("speed must be between 0.25 and 4.0")
+
+    import librosa
+
+    stretched = librosa.effects.time_stretch(array, rate=float(speed))
+    return np.ascontiguousarray(stretched, dtype=np.float32)
 
 
 def audio_to_bytes(
-    audio: Union[np.ndarray, torch.Tensor],
+    audio: AudioArray,
     sample_rate: int = 24000,
     format: AudioFormat = "mp3",
-    bitrate: str = "128k"
+    bitrate: str = "128k",
 ) -> bytes:
-    """
-    Convert audio array to bytes in specified format.
-    
-    Args:
-        audio: Audio data as numpy array or torch tensor
-        sample_rate: Sample rate of the audio
-        format: Output format (mp3, opus, aac, flac, wav, pcm)
-        bitrate: Bitrate for lossy formats (e.g., "128k", "192k")
-        
-    Returns:
-        Audio data as bytes
-    """
-    # Convert to 16-bit PCM
+    """Encode an audio array to the requested response format."""
     audio_16bit = convert_to_16_bit_wav(audio)
-    
+
     if format == "pcm":
-        # Return raw PCM data
         return audio_16bit.tobytes()
-    
-    elif format == "wav":
-        # Create WAV file in memory
+
+    if format == "wav":
         buffer = io.BytesIO()
-        sf.write(buffer, audio_16bit, sample_rate, format='WAV', subtype='PCM_16')
-        buffer.seek(0)
-        return buffer.read()
-    
+        sf.write(buffer, audio_16bit, sample_rate, format="WAV", subtype="PCM_16")
+        return buffer.getvalue()
+
+    wav_buffer = io.BytesIO()
+    sf.write(wav_buffer, audio_16bit, sample_rate, format="WAV", subtype="PCM_16")
+    wav_buffer.seek(0)
+    audio_segment = AudioSegment.from_wav(wav_buffer)
+
+    output_buffer = io.BytesIO()
+    if format == "m4a":
+        export_format = "mp4"
+    elif format == "aac":
+        export_format = "adts"
     else:
-        # Use pydub for other formats (mp3, opus, aac, flac)
-        # First create WAV in memory
-        wav_buffer = io.BytesIO()
-        sf.write(wav_buffer, audio_16bit, sample_rate, format='WAV', subtype='PCM_16')
-        wav_buffer.seek(0)
-        
-        # Load with pydub
-        audio_segment = AudioSegment.from_wav(wav_buffer)
-        
-        # Export to target format
-        output_buffer = io.BytesIO()
-        
-        export_params = {
-            "format": format,
-        }
-        
-        # Add bitrate for lossy formats
-        if format in ["mp3", "opus", "aac", "m4a"]:
-            export_params["bitrate"] = bitrate
-        
-        # Special handling for opus
-        if format == "opus":
-            export_params["codec"] = "libopus"
-        
-        # m4a is AAC in MP4 container
-        if format == "m4a":
-            export_params["codec"] = "aac"
-        
-        audio_segment.export(output_buffer, **export_params)
-        output_buffer.seek(0)
-        
-        return output_buffer.read()
+        export_format = format
+    export_params: dict[str, str] = {"format": export_format}
+
+    if format in {"mp3", "opus", "aac", "m4a"}:
+        export_params["bitrate"] = bitrate
+    if format == "opus":
+        export_params["codec"] = "libopus"
+    elif format in {"aac", "m4a"}:
+        export_params["codec"] = "aac"
+
+    audio_segment.export(output_buffer, **export_params)
+    return output_buffer.getvalue()
 
 
-def get_audio_duration(audio: Union[np.ndarray, torch.Tensor], sample_rate: int = 24000) -> float:
-    """
-    Get duration of audio in seconds.
-    
-    Args:
-        audio: Audio data as numpy array or torch tensor
-        sample_rate: Sample rate of the audio
-        
-    Returns:
-        Duration in seconds
-    """
-    if torch.is_tensor(audio):
-        audio = audio.detach().cpu().numpy()
-    
-    audio = np.array(audio)
-    if len(audio.shape) > 1:
-        audio = audio.squeeze()
-    
-    return len(audio) / sample_rate
+def get_audio_duration(audio: AudioArray, sample_rate: int = 24000) -> float:
+    """Return audio duration in seconds."""
+    return _to_mono_float32(audio).size / sample_rate
 
 
 def get_content_type(format: AudioFormat) -> str:
-    """
-    Get MIME content type for audio format.
-    
-    Args:
-        format: Audio format
-        
-    Returns:
-        MIME content type string
-    """
-    content_types = {
+    """Return the MIME content type for an audio format."""
+    return {
         "mp3": "audio/mpeg",
         "opus": "audio/opus",
         "aac": "audio/aac",
         "flac": "audio/flac",
         "wav": "audio/wav",
         "pcm": "application/octet-stream",
-        "m4a": "audio/mp4"
-    }
-    return content_types.get(format, "application/octet-stream")
+        "m4a": "audio/mp4",
+    }.get(format, "application/octet-stream")
 
 
-def concatenate_audio_chunks(
-    chunks: list[Union[np.ndarray, torch.Tensor]]
-) -> np.ndarray:
-    """
-    Concatenate multiple audio chunks into a single array.
-    
-    Args:
-        chunks: List of audio chunks
-        
-    Returns:
-        Concatenated audio as numpy array
-    """
-    if not chunks:
-        return np.array([], dtype=np.float32)
-    
-    # Convert all chunks to numpy
-    numpy_chunks = []
-    for chunk in chunks:
-        if torch.is_tensor(chunk):
-            chunk = chunk.detach().cpu().numpy()
-        chunk = np.array(chunk, dtype=np.float32)
-        if len(chunk.shape) > 1:
-            chunk = chunk.squeeze()
-        numpy_chunks.append(chunk)
-    
-    # Concatenate
-    return np.concatenate(numpy_chunks)
+def concatenate_audio_chunks(chunks: list[AudioArray]) -> np.ndarray:
+    """Concatenate audio chunks as a contiguous mono float32 array."""
+    arrays = [_to_mono_float32(chunk) for chunk in chunks]
+    arrays = [array for array in arrays if array.size]
+    if not arrays:
+        return np.empty(0, dtype=np.float32)
+    return np.ascontiguousarray(np.concatenate(arrays), dtype=np.float32)
 
 
 def trim_trailing_silence(
-    audio: Union[np.ndarray, torch.Tensor],
+    audio: AudioArray,
     sample_rate: int = 24000,
     thresh_ratio: float = 0.02,
     frame_s: float = 0.02,
     pad_s: float = 0.2,
     min_peak: float = 0.01,
 ) -> np.ndarray:
-    """Trim trailing near-silence from a mono audio array.
+    """Trim trailing near-silence while retaining a short natural tail."""
+    array = _to_mono_float32(audio)
+    if array.size == 0 or float(np.abs(array).max()) < min_peak:
+        return array
 
-    VibeVoice occasionally fails to emit its stop token and keeps generating
-    silent acoustic frames until max_new_tokens, leaving many seconds of trailing
-    silence after the real speech. This drops everything after the last frame
-    whose RMS exceeds ``thresh_ratio`` of the clip's loudest frame, keeping a
-    short ``pad_s`` tail. Real speech sits far above the threshold (>15% of peak
-    vs <2% for the silent tail), so actual content is never clipped.
+    window = max(1, int(frame_s * sample_rate))
+    frame_count = array.size // window
+    if frame_count == 0:
+        return array
 
-    Returns a 1-D float32 numpy array. Essentially-silent clips (peak < min_peak)
-    or clips with no trailing silence are returned unchanged.
-    """
-    if torch.is_tensor(audio):
-        audio = audio.detach().cpu().numpy()
-    a = np.asarray(audio, dtype=np.float32).reshape(-1)
-    if a.size == 0:
-        return a
-    if float(np.abs(a).max()) < min_peak:
-        return a  # essentially silent — leave as-is
-    win = max(1, int(frame_s * sample_rate))
-    nfr = a.size // win
-    if nfr == 0:
-        return a
-    frames = a[: nfr * win].reshape(nfr, win)
-    rms = np.sqrt((frames ** 2).mean(axis=1) + 1e-12)
-    thr = thresh_ratio * float(rms.max())
-    voiced = np.nonzero(rms > thr)[0]
+    frames = array[: frame_count * window].reshape(frame_count, window)
+    rms = np.sqrt((frames**2).mean(axis=1) + 1e-12)
+    threshold = thresh_ratio * float(rms.max())
+    voiced = np.flatnonzero(rms > threshold)
     if voiced.size == 0:
-        return a
-    end = min(a.size, int((voiced[-1] + 1) * win + pad_s * sample_rate))
-    return a[:end]
+        return array
 
-
+    end = min(array.size, int((voiced[-1] + 1) * window + pad_s * sample_rate))
+    return array[:end]

@@ -1,53 +1,69 @@
-"""Streaming utilities for real-time audio delivery.
+"""Streaming helpers with cooperative client-disconnect cancellation."""
 
-Includes cooperative cancellation: when the FastAPI Request reports
-disconnected (client closed the TCP connection), we set the cancel_event,
-which the underlying tts_service uses to halt model.generate() and free
-GPU resources via VibeVoice's `stop_check_fn` parameter.
-"""
+from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import threading
-from typing import AsyncIterator, Iterator, Optional, Union
+from typing import AsyncIterator, Iterator, Optional
+
 from fastapi import Request
 from fastapi.responses import StreamingResponse
-import numpy as np
-import torch
 
 logger = logging.getLogger(__name__)
-
 _SENTINEL = object()
 
 
-async def _watch_for_disconnect(request: Request, cancel_event: threading.Event):
-    """Background task that polls request.is_disconnected() and sets the
-    cancel event when the client goes away."""
+async def _watch_for_disconnect(request: Request, cancel_event: threading.Event) -> None:
     try:
         while not cancel_event.is_set():
             await asyncio.sleep(0.1)
             if await request.is_disconnected():
-                logger.info("Client disconnected — signalling cancellation")
+                logger.info("Client disconnected; signalling generation cancellation")
                 cancel_event.set()
                 return
     except asyncio.CancelledError:
-        # Normal shutdown when the response generator finishes
         raise
+    except Exception:
+        logger.debug("Disconnect watcher stopped unexpectedly", exc_info=True)
+        cancel_event.set()
 
 
 async def _aiter_sync(audio_stream: Iterator, cancel_event: threading.Event):
-    """Pull from a sync iterator without blocking the event loop. Stops
-    promptly when the cancel event fires."""
-    loop = asyncio.get_running_loop()
+    """Advance a synchronous producer without blocking the event loop."""
     iterator = iter(audio_stream)
-    while True:
-        if cancel_event.is_set():
-            return
-        chunk = await loop.run_in_executor(None, next, iterator, _SENTINEL)
+    while not cancel_event.is_set():
+        chunk = await asyncio.to_thread(next, iterator, _SENTINEL)
         if chunk is _SENTINEL:
             return
         yield chunk
+
+
+def _close_iterator(audio_stream: Iterator) -> None:
+    close = getattr(audio_stream, "close", None)
+    if callable(close):
+        try:
+            close()
+        except (RuntimeError, ValueError):
+            # A producer may already be closing from its worker thread.
+            logger.debug("Audio iterator could not be closed immediately", exc_info=True)
+
+
+async def _cleanup_stream(
+    audio_stream: Iterator,
+    cancel_event: threading.Event,
+    disconnect_task: Optional[asyncio.Task],
+) -> None:
+    cancel_event.set()
+    await asyncio.to_thread(_close_iterator, audio_stream)
+    if disconnect_task is not None and not disconnect_task.done():
+        disconnect_task.cancel()
+        try:
+            await disconnect_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 async def audio_chunk_generator(
@@ -57,44 +73,25 @@ async def audio_chunk_generator(
     cancel_event: Optional[threading.Event] = None,
     request: Optional[Request] = None,
 ) -> AsyncIterator[bytes]:
-    """
-    Generate audio chunks for streaming response.
-
-    Args:
-        audio_stream: Iterator yielding audio chunks
-        format: Audio format for encoding
-        sample_rate: Sample rate of audio
-        cancel_event: Threading event used to signal cancellation to the
-            underlying generator (model.generate() exits, GPU is freed).
-        request: FastAPI request — when provided we poll is_disconnected()
-            in a background task and trip the cancel_event when the client
-            closes the connection.
-
-    Yields:
-        Encoded audio chunk bytes
-    """
+    """Encode a synchronous audio iterator into a raw chunked response."""
     from api.utils.audio_utils import audio_to_bytes
 
-    if cancel_event is None:
-        cancel_event = threading.Event()
-
-    disconnect_task: Optional[asyncio.Task] = None
-    if request is not None:
-        disconnect_task = asyncio.create_task(_watch_for_disconnect(request, cancel_event))
-
+    event = cancel_event or threading.Event()
+    disconnect_task = (
+        asyncio.create_task(_watch_for_disconnect(request, event))
+        if request is not None
+        else None
+    )
     try:
-        async for chunk in _aiter_sync(audio_stream, cancel_event):
-            chunk_bytes = audio_to_bytes(chunk, sample_rate=sample_rate, format=format)
-            yield chunk_bytes
+        async for chunk in _aiter_sync(audio_stream, event):
+            yield await asyncio.to_thread(
+                audio_to_bytes,
+                chunk,
+                sample_rate,
+                format,
+            )
     finally:
-        # Always trip the event so the producer thread exits.
-        cancel_event.set()
-        if disconnect_task is not None and not disconnect_task.done():
-            disconnect_task.cancel()
-            try:
-                await disconnect_task
-            except (asyncio.CancelledError, Exception):
-                pass
+        await _cleanup_stream(audio_stream, event, disconnect_task)
 
 
 async def sse_audio_generator(
@@ -104,50 +101,42 @@ async def sse_audio_generator(
     cancel_event: Optional[threading.Event] = None,
     request: Optional[Request] = None,
 ) -> AsyncIterator[str]:
-    """
-    Generate Server-Sent Events for audio streaming. Same cancellation
-    semantics as audio_chunk_generator.
-    """
+    """Encode each audio chunk as a base64 Server-Sent Event."""
     from api.utils.audio_utils import audio_to_bytes
-    import base64
 
-    if cancel_event is None:
-        cancel_event = threading.Event()
-
-    disconnect_task: Optional[asyncio.Task] = None
-    if request is not None:
-        disconnect_task = asyncio.create_task(_watch_for_disconnect(request, cancel_event))
-
+    event = cancel_event or threading.Event()
+    disconnect_task = (
+        asyncio.create_task(_watch_for_disconnect(request, event))
+        if request is not None
+        else None
+    )
     chunk_id = 0
-
     try:
-        async for chunk in _aiter_sync(audio_stream, cancel_event):
-            chunk_bytes = audio_to_bytes(chunk, sample_rate=sample_rate, format=format)
-            chunk_base64 = base64.b64encode(chunk_bytes).decode('utf-8')
+        async for chunk in _aiter_sync(audio_stream, event):
+            chunk_bytes = await asyncio.to_thread(
+                audio_to_bytes,
+                chunk,
+                sample_rate,
+                format,
+            )
             event_data = {
                 "chunk_id": chunk_id,
-                "audio": chunk_base64,
+                "audio": base64.b64encode(chunk_bytes).decode("ascii"),
                 "format": format,
                 "sample_rate": sample_rate,
             }
             yield f"data: {json.dumps(event_data)}\n\n"
             chunk_id += 1
 
-        # Send completion event only if not cancelled
-        if not cancel_event.is_set():
+        if not event.is_set():
             yield f"data: {json.dumps({'done': True})}\n\n"
-
-    except Exception as e:
-        error_data = {"error": str(e), "type": type(e).__name__}
-        yield f"data: {json.dumps(error_data)}\n\n"
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("Audio streaming failed")
+        yield f"data: {json.dumps({'error': 'Audio streaming failed'})}\n\n"
     finally:
-        cancel_event.set()
-        if disconnect_task is not None and not disconnect_task.done():
-            disconnect_task.cancel()
-            try:
-                await disconnect_task
-            except (asyncio.CancelledError, Exception):
-                pass
+        await _cleanup_stream(audio_stream, event, disconnect_task)
 
 
 def create_streaming_response(
@@ -158,47 +147,33 @@ def create_streaming_response(
     cancel_event: Optional[threading.Event] = None,
     request: Optional[Request] = None,
 ) -> StreamingResponse:
-    """
-    Create a FastAPI StreamingResponse for audio.
-
-    Args:
-        audio_stream: Iterator yielding audio chunks
-        format: Audio format
-        sample_rate: Sample rate
-        use_sse: Whether to use Server-Sent Events format
-        cancel_event: Threading event for cooperative cancellation. Passed
-            through to the inner generator. Routes should also pass this
-            same event into tts_service.generate_speech() so the model
-            stops on disconnect.
-        request: FastAPI Request, used to poll is_disconnected() and trip
-            the cancel_event automatically.
-
-    Returns:
-        FastAPI StreamingResponse
-    """
+    """Create a streaming response without forcing a ``Transfer-Encoding`` header."""
     from api.utils.audio_utils import get_content_type
 
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    }
     if use_sse:
         return StreamingResponse(
             sse_audio_generator(
-                audio_stream, format, sample_rate,
-                cancel_event=cancel_event, request=request,
+                audio_stream,
+                format,
+                sample_rate,
+                cancel_event=cancel_event,
+                request=request,
             ),
             media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
+            headers=headers,
         )
-    else:
-        return StreamingResponse(
-            audio_chunk_generator(
-                audio_stream, format, sample_rate,
-                cancel_event=cancel_event, request=request,
-            ),
-            media_type=get_content_type(format),
-            headers={
-                "Transfer-Encoding": "chunked",
-                "Cache-Control": "no-cache",
-            },
-        )
+    return StreamingResponse(
+        audio_chunk_generator(
+            audio_stream,
+            format,
+            sample_rate,
+            cancel_event=cancel_event,
+            request=request,
+        ),
+        media_type=get_content_type(format),
+        headers=headers,
+    )
