@@ -4,7 +4,12 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from api.models import SpeakerConfig, VibeVoiceGenerateRequest, VoiceListResponse
+from api.models import (
+    OpenAITTSRequest,
+    SpeakerConfig,
+    VibeVoiceGenerateRequest,
+    VoiceListResponse,
+)
 from api.services.voice_manager import VoiceManager
 from api.utils.audio_utils import concatenate_audio_chunks, convert_to_16_bit_wav
 from api.utils.text_chunking import split_text_chunks
@@ -24,6 +29,26 @@ def test_sentence_boundaries_and_ellipsis_are_preserved():
         "Wait... really?",
         "Yes!",
     ]
+
+
+def test_long_sentenced_text_is_packed_between_requested_bounds():
+    text = " ".join((f"Sentence {index} " + "word " * 18 + ".") for index in range(40))
+    chunks = split_text_chunks(text, min_chars=1000, max_chars=2000)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 2000 for chunk in chunks)
+    assert all(len(chunk) >= 1000 for chunk in chunks[:-1])
+    assert " ".join(chunks) == text
+
+
+def test_openai_and_native_requests_accept_text_beyond_old_limits():
+    long_text = "A" * 120_000
+    assert OpenAITTSRequest(input=long_text, voice="alloy").input == long_text
+    request = VibeVoiceGenerateRequest(
+        script=long_text,
+        speakers=[SpeakerConfig(speaker_id=0, voice_preset="voice-a")],
+    )
+    assert request.script == long_text
 
 
 def test_empty_audio_conversion_is_safe():

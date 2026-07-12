@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -58,7 +58,8 @@ class Settings(BaseSettings):
     default_response_format: str = Field(default="mp3")
     max_generation_length: int = Field(default=90 * 60, ge=1)
     vibevoice_max_new_tokens: int = Field(default=256, ge=1)
-    vibevoice_max_chunk_chars: int = Field(default=1000, ge=32, le=10000)
+    vibevoice_min_chunk_chars: int = Field(default=1000, ge=32, le=10000)
+    vibevoice_max_chunk_chars: int = Field(default=2000, ge=32, le=10000)
     vibevoice_trim_silence: bool = Field(default=True)
     default_do_sample: bool = Field(default=False)
     default_temperature: float = Field(default=1.0, gt=0)
@@ -74,6 +75,14 @@ class Settings(BaseSettings):
         level = self.log_level.upper()
         valid = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
         return level if level in valid else "INFO"
+
+    @model_validator(mode="after")
+    def validate_chunk_window(self) -> "Settings":
+        if self.vibevoice_min_chunk_chars > self.vibevoice_max_chunk_chars:
+            raise ValueError(
+                "VIBEVOICE_MIN_CHUNK_CHARS cannot exceed VIBEVOICE_MAX_CHUNK_CHARS"
+            )
+        return self
 
     @property
     def cors_origins_list(self) -> list[str]:

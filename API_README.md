@@ -10,7 +10,7 @@ Complete documentation for the VibeVoice FastAPI server with OpenAI-compatible e
 - [Models](#models)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
-- [Gradio UI](#gradio-ui)
+- [VibeVoice Studio](#vibevoice-studio-gradio)
 
 ## Quick Start
 
@@ -435,28 +435,21 @@ brew install ffmpeg
 - **Swagger UI**: http://localhost:8001/docs
 - **ReDoc**: http://localhost:8001/redoc
 
-## Gradio UI
+## VibeVoice Studio (Gradio)
 
-A lightweight web front-end lives in `gradio_app/`. It's a pure HTTP client of
-this FastAPI server — no model loads in the Gradio process, so it uses zero
-extra VRAM.
+The long-form Studio lives in `demo/gradio_demo.py` and loads the model directly.
+It supports preset or uploaded voice references, per-reference trimming,
+generation parameters, streaming playback, and final joined downloads.
 
 ```bash
-# Server must be up first
-curl -fsS http://localhost:6969/health
-
-# Launch the UI (uses /home/op/miniconda3/envs/vibevoice/bin/python — has gradio 6.x)
-bash gradio_app/start.sh
+python demo/gradio_demo.py --model_path microsoft/VibeVoice-1.5B --device cuda
 # → http://localhost:7860
 ```
 
-### Tabs
-
-| Tab | Endpoint hit | What you get |
-|---|---|---|
-| **Single speaker** | `POST /v1/audio/speech` | Text + voice + speed + format. OpenAI-compatible payload. |
-| **Multi-speaker** | `POST /v1/vibevoice/generate` | `Speaker N:` script, JSON speakers list, full control over `cfg_scale` / `inference_steps` / `seed` / format. Up to 4 voices. |
-| **Help** | — | Endpoint reference, speakers JSON shape, parameter tips. |
+Studio and both HTTP generation endpoints accept long input without a total
+character cap. Text is split on sentence boundaries into model calls targeting
+1,000-2,000 characters, generated sequentially, and concatenated without changing
+the order. Unpunctuated oversized text falls back to lossless word-aware splitting.
 
 ### Speakers JSON (multi-speaker tab)
 
@@ -467,16 +460,9 @@ bash gradio_app/start.sh
 ]
 ```
 
-### Env overrides
-
-| Var | Default |
-|---|---|
-| `VIBEVOICE_API` | `http://localhost:6969` |
-| `GRADIO_HOST` | `0.0.0.0` |
-| `GRADIO_PORT` | `7860` |
-| `VIBEVOICE_GRADIO_PY` | `/home/op/miniconda3/envs/vibevoice/bin/python` |
-
-Full reference: [`gradio_app/README.md`](gradio_app/README.md).
+Chunk defaults can be changed with `VIBEVOICE_MIN_CHUNK_CHARS` (default `1000`)
+and `VIBEVOICE_MAX_CHUNK_CHARS` (default `2000`) for the API. Studio exposes both
+values directly in its **Unlimited Text Chunking** panel.
 
 ## Support
 

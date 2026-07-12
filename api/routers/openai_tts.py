@@ -157,7 +157,11 @@ async def create_speech(
             )
 
         voice_audio = await asyncio.to_thread(_resolve_voice, voices, body.voice)
-        sentences = split_text_chunks(sanitized, settings.vibevoice_max_chunk_chars)
+        sentences = split_text_chunks(
+            sanitized,
+            max_chars=settings.vibevoice_max_chunk_chars,
+            min_chars=settings.vibevoice_min_chunk_chars,
+        )
         if not sentences:
             raise HTTPException(status_code=400, detail="Input contains no speakable text")
 

@@ -63,6 +63,7 @@ def _parse_script_to_chunks(
     script: str,
     num_speakers: int,
     max_chars: int,
+    min_chars: int = 1000,
 ) -> list[tuple[int, str]]:
     """Parse labels, sanitize utterances, and enforce a hard prompt-size bound."""
     chunks: list[tuple[int, str]] = []
@@ -84,7 +85,11 @@ def _parse_script_to_chunks(
                 f"Script references Speaker {speaker_index}, but only {num_speakers} speaker(s) were configured"
             )
 
-        for part in split_text_chunks(utterance, max_chars=max_chars):
+        for part in split_text_chunks(
+            utterance,
+            max_chars=max_chars,
+            min_chars=min(min_chars, max_chars),
+        ):
             cleaned = sanitize_text(part)
             if cleaned and is_speakable(cleaned):
                 chunks.append((speaker_index, cleaned))
@@ -228,6 +233,7 @@ async def generate_speech(
                 body.script,
                 len(voice_samples),
                 settings.vibevoice_max_chunk_chars,
+                settings.vibevoice_min_chunk_chars,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

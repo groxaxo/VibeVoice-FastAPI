@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import time
+import re
 from pathlib import Path
 from typing import List, Dict, Any, Iterator
 from datetime import datetime
@@ -26,6 +27,7 @@ from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
 from vibevoice.modular.streamer import AudioStreamer
 from transformers.utils import logging
 from transformers import set_seed
+from api.utils.text_chunking import split_text_chunks
 
 logging.set_verbosity_info()
 logger = logging.get_logger(__name__)
@@ -157,307 +159,289 @@ class VibeVoiceDemo:
         }
         
         if not self.available_voices:
-            raise gr.Error("No voice presets found. Please add .wav files to the demo/voices directory.")
+            print("No bundled voice presets found; Studio will use uploaded references.")
+            return
         
         print(f"Found {len(self.available_voices)} voice files in {voices_dir}")
         print(f"Available voices: {', '.join(self.available_voices.keys())}")
     
-    def read_audio(self, audio_path: str, target_sr: int = 24000) -> np.ndarray:
-        """Read and preprocess audio file."""
+    def read_audio(
+        self,
+        audio_path: str,
+        target_sr: int = 24000,
+        trim_start: float = 0.0,
+        trim_end: float = 0.0,
+        normalize: bool = True,
+    ) -> np.ndarray:
+        """Read, trim, resample, and optionally normalize a voice reference."""
         try:
-            wav, sr = sf.read(audio_path)
+            wav, sr = sf.read(audio_path, dtype="float32")
             if len(wav.shape) > 1:
                 wav = np.mean(wav, axis=1)
+            duration = len(wav) / float(sr)
+            start = max(0.0, float(trim_start or 0.0))
+            end = float(trim_end or 0.0)
+            end = duration if end <= 0 else min(end, duration)
+            if start >= duration or end <= start:
+                raise ValueError(
+                    f"Invalid trim range {start:.2f}s-{end:.2f}s for a {duration:.2f}s voice sample"
+                )
+            wav = wav[int(start * sr) : int(end * sr)]
             if sr != target_sr:
                 wav = librosa.resample(wav, orig_sr=sr, target_sr=target_sr)
-            return wav
+            wav = np.asarray(wav, dtype=np.float32).reshape(-1)
+            if normalize and wav.size:
+                peak = float(np.max(np.abs(wav)))
+                if peak > 0:
+                    wav = wav * (0.95 / peak)
+            return np.ascontiguousarray(wav)
         except Exception as e:
             print(f"Error reading audio {audio_path}: {e}")
             return np.array([])
-    
-    def generate_podcast_streaming(self, 
-                                 num_speakers: int,
-                                 script: str,
-                                 speaker_1: str = None,
-                                 speaker_2: str = None,
-                                 speaker_3: str = None,
-                                 speaker_4: str = None,
-                                 cfg_scale: float = 1.3) -> Iterator[tuple]:
+
+    @staticmethod
+    def _format_script(script: str, num_speakers: int) -> str:
+        """Normalize labels and auto-assign unlabeled lines in speaker rotation."""
+        raw_lines = [
+            line.strip()
+            for line in script.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+            if line.strip()
+        ]
+        labelled_ids = [
+            int(match.group(1))
+            for line in raw_lines
+            if (match := re.match(r"^Speaker\s+(\d+)\s*:", line, re.IGNORECASE))
+        ]
+        one_based = bool(labelled_ids) and 0 not in labelled_ids and all(
+            1 <= speaker_id <= num_speakers for speaker_id in labelled_ids
+        )
+        formatted = []
+        for line in raw_lines:
+            match = re.match(r"^Speaker\s+(\d+)\s*:\s*(.*)$", line, re.IGNORECASE)
+            if match:
+                speaker_id = int(match.group(1)) - (1 if one_based else 0)
+                if speaker_id >= num_speakers:
+                    raise gr.Error(
+                        f"Script references Speaker {speaker_id}, but only {num_speakers} speaker(s) are enabled."
+                    )
+                formatted.append(f"Speaker {speaker_id}: {match.group(2).strip()}")
+            else:
+                speaker_id = len(formatted) % num_speakers
+                formatted.append(f"Speaker {speaker_id}: {line}")
+        return "\n".join(formatted)
+
+    @staticmethod
+    def _chunk_script(script: str, min_chars: int, max_chars: int) -> List[str]:
+        """Pack labelled turns into sentence-aware, model-safe script chunks."""
+        if min_chars > max_chars:
+            raise gr.Error("Minimum chunk size cannot exceed maximum chunk size.")
+
+        units = []
+        for line in script.splitlines():
+            match = re.match(r"^(Speaker\s+\d+\s*:)(.*)$", line, re.IGNORECASE)
+            if not match:
+                continue
+            label, utterance = match.group(1), match.group(2).strip()
+            text_budget = max_chars - len(label) - 1
+            if text_budget < 32:
+                raise gr.Error("Maximum chunk size is too small for the speaker label.")
+            for part in split_text_chunks(
+                utterance,
+                min_chars=min(min_chars, text_budget),
+                max_chars=text_budget,
+            ):
+                units.append(f"{label} {part}")
+
+        chunks = []
+        current = ""
+        for unit in units:
+            candidate = f"{current}\n{unit}" if current else unit
+            if len(candidate) <= max_chars:
+                current = candidate
+            else:
+                if current:
+                    chunks.append(current)
+                current = unit
+        if current:
+            chunks.append(current)
+        return chunks
+
+    def generate_podcast_streaming(
+        self,
+        num_speakers: int,
+        script: str,
+        speaker_presets: List[str],
+        uploaded_voices: List[str],
+        trim_starts: List[float],
+        trim_ends: List[float],
+        cfg_scale: float = 1.3,
+        inference_steps: int = 10,
+        seed: int = 42,
+        do_sample: bool = False,
+        temperature: float = 0.8,
+        top_p: float = 0.95,
+        min_chunk_chars: int = 1000,
+        max_chunk_chars: int = 2000,
+        chunk_pause_seconds: float = 0.15,
+        normalize_voices: bool = True,
+    ) -> Iterator[tuple]:
+        """Generate unlimited text as bounded chunks and concatenate their audio."""
         try:
-            
-            # Reset stop flag and set generating state
             self.stop_generation = False
             self.is_generating = True
-            
-            # Validate inputs
             if not script.strip():
-                self.is_generating = False
                 raise gr.Error("Error: Please provide a script.")
-
-            # Defend against common mistake
             script = script.replace("’", "'")
-            
             if num_speakers < 1 or num_speakers > 4:
-                self.is_generating = False
                 raise gr.Error("Error: Number of speakers must be between 1 and 4.")
-            
-            # Collect selected speakers
-            selected_speakers = [speaker_1, speaker_2, speaker_3, speaker_4][:num_speakers]
-            
-            # Validate speaker selections
-            for i, speaker in enumerate(selected_speakers):
-                if not speaker or speaker not in self.available_voices:
-                    self.is_generating = False
-                    raise gr.Error(f"Error: Please select a valid speaker for Speaker {i+1}.")
-            
-            # Build initial log
-            log = f"🎙️ Generating podcast with {num_speakers} speakers\n"
-            log += f"📊 Parameters: CFG Scale={cfg_scale}, Inference Steps={self.inference_steps}\n"
-            log += f"🎭 Speakers: {', '.join(selected_speakers)}\n"
-            
-            # Check for stop signal
-            if self.stop_generation:
-                self.is_generating = False
-                yield None, "🛑 Generation stopped by user", gr.update(visible=False)
-                return
-            
-            # Load voice samples
+
+            min_chunk_chars = int(min_chunk_chars)
+            max_chunk_chars = int(max_chunk_chars)
+            formatted_script = self._format_script(script, int(num_speakers))
+            script_chunks = self._chunk_script(
+                formatted_script,
+                min_chars=min_chunk_chars,
+                max_chars=max_chunk_chars,
+            )
+            if not script_chunks:
+                raise gr.Error("Error: The script contains no speakable text.")
+
             voice_samples = []
-            for speaker_name in selected_speakers:
-                audio_path = self.available_voices[speaker_name]
-                audio_data = self.read_audio(audio_path)
+            voice_labels = []
+            for index in range(int(num_speakers)):
+                uploaded = uploaded_voices[index] if index < len(uploaded_voices) else None
+                preset = speaker_presets[index] if index < len(speaker_presets) else None
+                if uploaded:
+                    audio_path = uploaded
+                    label = f"upload:{Path(uploaded).stem}"
+                elif preset and preset in self.available_voices:
+                    audio_path = self.available_voices[preset]
+                    label = preset
+                else:
+                    raise gr.Error(
+                        f"Choose a preset or upload a reference for Speaker {index}."
+                    )
+                audio_data = self.read_audio(
+                    audio_path,
+                    trim_start=trim_starts[index],
+                    trim_end=trim_ends[index],
+                    normalize=normalize_voices,
+                )
                 if len(audio_data) == 0:
-                    self.is_generating = False
-                    raise gr.Error(f"Error: Failed to load audio for {speaker_name}")
+                    raise gr.Error(f"Failed to load or trim voice reference for Speaker {index}.")
                 voice_samples.append(audio_data)
-            
-            # log += f"✅ Loaded {len(voice_samples)} voice samples\n"
-            
-            # Check for stop signal
-            if self.stop_generation:
-                self.is_generating = False
-                yield None, "🛑 Generation stopped by user", gr.update(visible=False)
-                return
-            
-            # Parse script to assign speaker ID's
-            lines = script.strip().split('\n')
-            formatted_script_lines = []
-            
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                    
-                # Check if line already has speaker format
-                if line.startswith('Speaker ') and ':' in line:
-                    formatted_script_lines.append(line)
-                else:
-                    # Auto-assign to speakers in rotation
-                    speaker_id = len(formatted_script_lines) % num_speakers
-                    formatted_script_lines.append(f"Speaker {speaker_id}: {line}")
-            
-            formatted_script = '\n'.join(formatted_script_lines)
-            log += f"📝 Formatted script with {len(formatted_script_lines)} turns\n\n"
-            log += "🔄 Processing with VibeVoice (streaming mode)...\n"
-            
-            # Check for stop signal before processing
-            if self.stop_generation:
-                self.is_generating = False
-                yield None, "🛑 Generation stopped by user", gr.update(visible=False)
-                return
-            
+                voice_labels.append(label)
+
+            log = f"🎙️ Generating with {num_speakers} speaker(s)\n"
+            log += (
+                f"📊 CFG={cfg_scale}, steps={int(inference_steps)}, seed={int(seed)}, "
+                f"sampling={bool(do_sample)}\n"
+            )
+            log += f"🎭 Voices: {', '.join(voice_labels)}\n"
+            log += (
+                f"🧩 Unlimited mode: {len(script_chunks)} chunk(s), "
+                f"targeting {min_chunk_chars}-{max_chunk_chars} characters at periods\n"
+            )
+
             start_time = time.time()
-            
-            inputs = self.processor(
-                text=[formatted_script],
-                voice_samples=[voice_samples],
-                padding=True,
-                return_tensors="pt",
-                return_attention_mask=True,
-            )
-            # Move tensors to device
-            target_device = self.device if self.device in ("cuda", "mps") else "cpu"
-            for k, v in inputs.items():
-                if torch.is_tensor(v):
-                    inputs[k] = v.to(target_device)
-            
-            # Create audio streamer
-            audio_streamer = AudioStreamer(
-                batch_size=1,
-                stop_signal=None,
-                timeout=None
-            )
-            
-            # Store current streamer for potential stopping
-            self.current_streamer = audio_streamer
-            
-            # Start generation in a separate thread
-            generation_thread = threading.Thread(
-                target=self._generate_with_streamer,
-                args=(inputs, cfg_scale, audio_streamer)
-            )
-            generation_thread.start()
-            
-            # Wait for generation to actually start producing audio
-            time.sleep(1)  # Reduced from 3 to 1 second
-
-            # Check for stop signal after thread start
-            if self.stop_generation:
-                audio_streamer.end()
-                generation_thread.join(timeout=5.0)  # Wait up to 5 seconds for thread to finish
-                self.is_generating = False
-                yield None, "🛑 Generation stopped by user", gr.update(visible=False)
-                return
-
-            # Collect audio chunks as they arrive
             sample_rate = 24000
-            all_audio_chunks = []  # For final statistics
-            pending_chunks = []  # Buffer for accumulating small chunks
-            chunk_count = 0
-            last_yield_time = time.time()
-            min_yield_interval = 15 # Yield every 15 seconds
-            min_chunk_size = sample_rate * 30 # At least 2 seconds of audio
-            
-            # Get the stream for the first (and only) sample
-            audio_stream = audio_streamer.get_stream(0)
-            
-            has_yielded_audio = False
-            has_received_chunks = False  # Track if we received any chunks at all
-            
-            for audio_chunk in audio_stream:
-                # Check for stop signal in the streaming loop
+            all_audio_chunks = []
+            stream_piece_count = 0
+
+            for script_index, script_chunk in enumerate(script_chunks):
                 if self.stop_generation:
-                    audio_streamer.end()
                     break
-                    
-                chunk_count += 1
-                has_received_chunks = True  # Mark that we received at least one chunk
-                
-                # Convert tensor to numpy
-                if torch.is_tensor(audio_chunk):
-                    # Convert bfloat16 to float32 first, then to numpy
-                    if audio_chunk.dtype == torch.bfloat16:
-                        audio_chunk = audio_chunk.float()
-                    audio_np = audio_chunk.cpu().numpy().astype(np.float32)
-                else:
-                    audio_np = np.array(audio_chunk, dtype=np.float32)
-                
-                # Ensure audio is 1D and properly normalized
-                if len(audio_np.shape) > 1:
-                    audio_np = audio_np.squeeze()
-                
-                # Convert to 16-bit for Gradio
-                audio_16bit = convert_to_16_bit_wav(audio_np)
-                
-                # Store for final statistics
-                all_audio_chunks.append(audio_16bit)
-                
-                # Add to pending chunks buffer
-                pending_chunks.append(audio_16bit)
-                
-                # Calculate pending audio size
-                pending_audio_size = sum(len(chunk) for chunk in pending_chunks)
-                current_time = time.time()
-                time_since_last_yield = current_time - last_yield_time
-                
-                # Decide whether to yield
-                should_yield = False
-                if not has_yielded_audio and pending_audio_size >= min_chunk_size:
-                    # First yield: wait for minimum chunk size
-                    should_yield = True
-                    has_yielded_audio = True
-                elif has_yielded_audio and (pending_audio_size >= min_chunk_size or time_since_last_yield >= min_yield_interval):
-                    # Subsequent yields: either enough audio or enough time has passed
-                    should_yield = True
-                
-                if should_yield and pending_chunks:
-                    # Concatenate and yield only the new audio chunks
-                    new_audio = np.concatenate(pending_chunks)
-                    new_duration = len(new_audio) / sample_rate
-                    total_duration = sum(len(chunk) for chunk in all_audio_chunks) / sample_rate
-                    
-                    log_update = log + f"🎵 Streaming: {total_duration:.1f}s generated (chunk {chunk_count})\n"
-                    
-                    # Yield streaming audio chunk and keep complete_audio as None during streaming
-                    yield (sample_rate, new_audio), None, log_update, gr.update(visible=True)
-                    
-                    # Clear pending chunks after yielding
-                    pending_chunks = []
-                    last_yield_time = current_time
-            
-            # Yield any remaining chunks
-            if pending_chunks:
-                final_new_audio = np.concatenate(pending_chunks)
-                total_duration = sum(len(chunk) for chunk in all_audio_chunks) / sample_rate
-                log_update = log + f"🎵 Streaming final chunk: {total_duration:.1f}s total\n"
-                yield (sample_rate, final_new_audio), None, log_update, gr.update(visible=True)
-                has_yielded_audio = True  # Mark that we yielded audio
-            
-            # Wait for generation to complete (with timeout to prevent hanging)
-            generation_thread.join(timeout=5.0)  # Increased timeout to 5 seconds
 
-            # If thread is still alive after timeout, force end
-            if generation_thread.is_alive():
-                print("Warning: Generation thread did not complete within timeout")
-                audio_streamer.end()
-                generation_thread.join(timeout=5.0)
+                inputs = self.processor(
+                    text=[script_chunk],
+                    voice_samples=[voice_samples],
+                    padding=True,
+                    return_tensors="pt",
+                    return_attention_mask=True,
+                )
+                target_device = self.device if self.device in ("cuda", "mps") else "cpu"
+                for key, value in inputs.items():
+                    if torch.is_tensor(value):
+                        inputs[key] = value.to(target_device)
 
-            # Clean up
+                audio_streamer = AudioStreamer(batch_size=1, stop_signal=None, timeout=None)
+                self.current_streamer = audio_streamer
+                errors = []
+                generation_thread = threading.Thread(
+                    target=self._generate_with_streamer,
+                    args=(
+                        inputs,
+                        cfg_scale,
+                        audio_streamer,
+                        int(inference_steps),
+                        int(seed) + script_index,
+                        bool(do_sample),
+                        float(temperature),
+                        float(top_p),
+                        errors,
+                    ),
+                    daemon=True,
+                )
+                generation_thread.start()
+
+                chunk_audio = []
+                for audio_chunk in audio_streamer.get_stream(0):
+                    if self.stop_generation:
+                        audio_streamer.end()
+                        break
+                    if torch.is_tensor(audio_chunk):
+                        audio_chunk = audio_chunk.float().cpu().numpy()
+                    audio_16bit = convert_to_16_bit_wav(
+                        np.asarray(audio_chunk, dtype=np.float32).reshape(-1)
+                    )
+                    if not audio_16bit.size:
+                        continue
+                    chunk_audio.append(audio_16bit)
+                    all_audio_chunks.append(audio_16bit)
+                    stream_piece_count += 1
+                    total_duration = sum(len(part) for part in all_audio_chunks) / sample_rate
+                    progress = log + (
+                        f"🔄 Text chunk {script_index + 1}/{len(script_chunks)}\n"
+                        f"🎵 {total_duration:.1f}s generated ({stream_piece_count} audio pieces)\n"
+                    )
+                    yield (sample_rate, audio_16bit), None, progress, gr.update(visible=True)
+
+                generation_thread.join(timeout=10.0)
+                if generation_thread.is_alive():
+                    self.stop_generation = True
+                    audio_streamer.end()
+                    generation_thread.join(timeout=5.0)
+                    raise RuntimeError("Generation worker did not stop cleanly")
+                if errors and not self.stop_generation:
+                    raise errors[0]
+                if not chunk_audio and not self.stop_generation:
+                    raise RuntimeError(
+                        f"No audio received for text chunk {script_index + 1}/{len(script_chunks)}"
+                    )
+
+                if script_index < len(script_chunks) - 1 and chunk_pause_seconds > 0:
+                    pause = np.zeros(
+                        int(sample_rate * float(chunk_pause_seconds)), dtype=np.int16
+                    )
+                    all_audio_chunks.append(pause)
+
             self.current_streamer = None
             self.is_generating = False
-            
-            generation_time = time.time() - start_time
-            
-            # Check if stopped by user
             if self.stop_generation:
                 yield None, None, "🛑 Generation stopped by user", gr.update(visible=False)
                 return
-            
-            # Debug logging
-            # print(f"Debug: has_received_chunks={has_received_chunks}, chunk_count={chunk_count}, all_audio_chunks length={len(all_audio_chunks)}")
-            
-            # Check if we received any chunks but didn't yield audio
-            if has_received_chunks and not has_yielded_audio and all_audio_chunks:
-                # We have chunks but didn't meet the yield criteria, yield them now
-                complete_audio = np.concatenate(all_audio_chunks)
-                final_duration = len(complete_audio) / sample_rate
-                
-                final_log = log + f"⏱️ Generation completed in {generation_time:.2f} seconds\n"
-                final_log += f"🎵 Final audio duration: {final_duration:.2f} seconds\n"
-                final_log += f"📊 Total chunks: {chunk_count}\n"
-                final_log += "✨ Generation successful! Complete audio is ready.\n"
-                final_log += "💡 Not satisfied? You can regenerate or adjust the CFG scale for different results."
-                
-                # Yield the complete audio
-                yield None, (sample_rate, complete_audio), final_log, gr.update(visible=False)
-                return
-            
-            if not has_received_chunks:
-                error_log = log + f"\n❌ Error: No audio chunks were received from the model. Generation time: {generation_time:.2f}s"
-                yield None, None, error_log, gr.update(visible=False)
-                return
-            
-            if not has_yielded_audio:
-                error_log = log + f"\n❌ Error: Audio was generated but not streamed. Chunk count: {chunk_count}"
-                yield None, None, error_log, gr.update(visible=False)
-                return
+            if not all_audio_chunks:
+                raise RuntimeError("No audio was generated")
 
-            # Prepare the complete audio
-            if all_audio_chunks:
-                complete_audio = np.concatenate(all_audio_chunks)
-                final_duration = len(complete_audio) / sample_rate
-                
-                final_log = log + f"⏱️ Generation completed in {generation_time:.2f} seconds\n"
-                final_log += f"🎵 Final audio duration: {final_duration:.2f} seconds\n"
-                final_log += f"📊 Total chunks: {chunk_count}\n"
-                final_log += "✨ Generation successful! Complete audio is ready in the 'Complete Audio' tab.\n"
-                final_log += "💡 Not satisfied? You can regenerate or adjust the CFG scale for different results."
-                
-                # Final yield: Clear streaming audio and provide complete audio
-                yield None, (sample_rate, complete_audio), final_log, gr.update(visible=False)
-            else:
-                final_log = log + "❌ No audio was generated."
-                yield None, None, final_log, gr.update(visible=False)
+            complete_audio = np.concatenate(all_audio_chunks)
+            generation_time = time.time() - start_time
+            final_duration = len(complete_audio) / sample_rate
+            final_log = log + (
+                f"✅ Joined {len(script_chunks)} text chunk(s) in {generation_time:.2f}s\n"
+                f"🎵 Final audio duration: {final_duration:.2f}s\n"
+                "✨ Complete audio is ready to play or download."
+            )
+            yield None, (sample_rate, complete_audio), final_log, gr.update(visible=False)
 
         except gr.Error as e:
             # Handle Gradio-specific errors (like input validation)
@@ -476,7 +460,18 @@ class VibeVoiceDemo:
             traceback.print_exc()
             yield None, None, error_msg, gr.update(visible=False)
     
-    def _generate_with_streamer(self, inputs, cfg_scale, audio_streamer):
+    def _generate_with_streamer(
+        self,
+        inputs,
+        cfg_scale,
+        audio_streamer,
+        inference_steps,
+        seed,
+        do_sample,
+        temperature,
+        top_p,
+        errors,
+    ):
         """Helper method to run generation with streamer in a separate thread."""
         try:
             # Check for stop signal before starting generation
@@ -484,25 +479,25 @@ class VibeVoiceDemo:
                 audio_streamer.end()
                 return
                 
-            # Define a stop check function that can be called from generate
-            def check_stop_generation():
-                return self.stop_generation
-                
-            outputs = self.model.generate(
+            self.model.set_ddpm_inference_steps(num_steps=inference_steps)
+            set_seed(seed)
+            generation_config = {'do_sample': do_sample}
+            if do_sample:
+                generation_config.update(temperature=temperature, top_p=top_p)
+            self.model.generate(
                 **inputs,
                 max_new_tokens=None,
                 cfg_scale=cfg_scale,
                 tokenizer=self.processor.tokenizer,
-                generation_config={
-                    'do_sample': False,
-                },
+                generation_config=generation_config,
                 audio_streamer=audio_streamer,
-                stop_check_fn=check_stop_generation,  # Pass the stop check function
+                stop_check_fn=lambda: self.stop_generation,
                 verbose=False,  # Disable verbose in streaming mode
                 refresh_negative=True,
             )
             
         except Exception as e:
+            errors.append(e)
             print(f"Error in generation thread: {e}")
             traceback.print_exc()
             # Make sure to end the stream on error
@@ -801,7 +796,7 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
     """
     
     with gr.Blocks(
-        title="VibeVoice - AI Podcast Generator",
+        title="VibeVoice Studio - Unlimited AI Audio",
         css=custom_css,
         theme=gr.themes.Soft(
             primary_hue="blue",
@@ -813,8 +808,8 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
         # Header
         gr.HTML("""
         <div class="main-header">
-            <h1>🎙️ Vibe Podcasting </h1>
-            <p>Generating Long-form Multi-speaker AI Podcast with VibeVoice</p>
+            <h1>🎙️ VibeVoice Studio</h1>
+            <p>Unlimited long-form, multi-speaker audio with custom voice references</p>
         </div>
         """)
         
@@ -837,20 +832,50 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
                 gr.Markdown("### 🎭 **Speaker Selection**")
                 
                 available_speaker_names = list(demo_instance.available_voices.keys())
-                # default_speakers = available_speaker_names[:4] if len(available_speaker_names) >= 4 else available_speaker_names
-                default_speakers = ['en-Alice_woman', 'en-Carter_man', 'en-Frank_man', 'en-Maya_woman']
+                preferred_speakers = ['en-Alice_woman', 'en-Carter_man', 'en-Frank_man', 'en-Maya_woman']
+                default_speakers = [
+                    preferred_speakers[i]
+                    if preferred_speakers[i] in available_speaker_names
+                    else (available_speaker_names[i % len(available_speaker_names)] if available_speaker_names else None)
+                    for i in range(4)
+                ]
 
                 speaker_selections = []
+                speaker_uploads = []
+                speaker_trim_starts = []
+                speaker_trim_ends = []
+                speaker_panels = []
                 for i in range(4):
                     default_value = default_speakers[i] if i < len(default_speakers) else None
-                    speaker = gr.Dropdown(
-                        choices=available_speaker_names,
-                        value=default_value,
-                        label=f"Speaker {i+1}",
-                        visible=(i < 2),  # Initially show only first 2 speakers
-                        elem_classes="speaker-item"
-                    )
+                    with gr.Column(visible=(i < 2)) as speaker_panel:
+                        gr.Markdown(f"#### Speaker {i}")
+                        speaker = gr.Dropdown(
+                            choices=available_speaker_names,
+                            value=default_value,
+                            label="Preset voice (used when no upload is supplied)",
+                            elem_classes="speaker-item",
+                        )
+                        upload = gr.Audio(
+                            sources=["upload", "microphone"],
+                            type="filepath",
+                            label="Upload or record a voice reference (overrides preset)",
+                        )
+                        with gr.Row():
+                            trim_start = gr.Number(
+                                value=0.0,
+                                minimum=0.0,
+                                label="Trim start (seconds)",
+                            )
+                            trim_end = gr.Number(
+                                value=0.0,
+                                minimum=0.0,
+                                label="Trim end (0 = full file)",
+                            )
+                    speaker_panels.append(speaker_panel)
                     speaker_selections.append(speaker)
+                    speaker_uploads.append(upload)
+                    speaker_trim_starts.append(trim_start)
+                    speaker_trim_ends.append(trim_end)
                 
                 # Advanced settings
                 gr.Markdown("### ⚙️ **Advanced Settings**")
@@ -865,6 +890,50 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
                         label="CFG Scale (Guidance Strength)",
                         # info="Higher values increase adherence to text",
                         elem_classes="slider-container"
+                    )
+                    inference_steps = gr.Slider(
+                        minimum=5,
+                        maximum=50,
+                        value=demo_instance.inference_steps,
+                        step=1,
+                        label="Inference Steps",
+                    )
+                    seed = gr.Number(value=42, precision=0, label="Seed")
+                    do_sample = gr.Checkbox(value=False, label="Enable sampling")
+                    temperature = gr.Slider(
+                        minimum=0.1, maximum=2.0, value=0.8, step=0.05, label="Temperature"
+                    )
+                    top_p = gr.Slider(
+                        minimum=0.05, maximum=1.0, value=0.95, step=0.05, label="Top P"
+                    )
+                    normalize_voices = gr.Checkbox(
+                        value=True,
+                        label="Normalize uploaded/preset voice references",
+                    )
+                with gr.Accordion("Unlimited Text Chunking", open=False):
+                    gr.Markdown(
+                        "Text is split at sentence periods, generated sequentially, and joined into one file."
+                    )
+                    min_chunk_chars = gr.Slider(
+                        minimum=1000,
+                        maximum=1900,
+                        value=1000,
+                        step=100,
+                        label="Target minimum characters",
+                    )
+                    max_chunk_chars = gr.Slider(
+                        minimum=1100,
+                        maximum=2000,
+                        value=2000,
+                        step=100,
+                        label="Hard maximum characters",
+                    )
+                    chunk_pause_seconds = gr.Slider(
+                        minimum=0.0,
+                        maximum=2.0,
+                        value=0.15,
+                        step=0.05,
+                        label="Pause between joined chunks (seconds)",
                     )
                 
             # Right column - Generation
@@ -980,16 +1049,29 @@ Or paste text directly and it will auto-assign speakers.""",
         num_speakers.change(
             fn=update_speaker_visibility,
             inputs=[num_speakers],
-            outputs=speaker_selections
+            outputs=speaker_panels
         )
         
         # Main generation function with streaming
-        def generate_podcast_wrapper(num_speakers, script, *speakers_and_params):
+        def generate_podcast_wrapper(num_speakers, script, *speaker_and_params):
             """Wrapper function to handle the streaming generation call."""
             try:
-                # Extract speakers and parameters
-                speakers = speakers_and_params[:4]  # First 4 are speaker selections
-                cfg_scale = speakers_and_params[4]   # CFG scale
+                presets = list(speaker_and_params[0:4])
+                uploads = list(speaker_and_params[4:8])
+                trim_starts = list(speaker_and_params[8:12])
+                trim_ends = list(speaker_and_params[12:16])
+                (
+                    cfg_value,
+                    steps_value,
+                    seed_value,
+                    sample_value,
+                    temperature_value,
+                    top_p_value,
+                    normalize_value,
+                    min_chars_value,
+                    max_chars_value,
+                    pause_value,
+                ) = speaker_and_params[16:26]
                 
                 # Clear outputs and reset visibility at start
                 yield None, gr.update(value=None, visible=False), "🎙️ Starting generation...", gr.update(visible=True), gr.update(visible=False), gr.update(visible=True)
@@ -1000,11 +1082,20 @@ Or paste text directly and it will auto-assign speakers.""",
                 for streaming_audio, complete_audio, log, streaming_visible in demo_instance.generate_podcast_streaming(
                     num_speakers=int(num_speakers),
                     script=script,
-                    speaker_1=speakers[0],
-                    speaker_2=speakers[1],
-                    speaker_3=speakers[2],
-                    speaker_4=speakers[3],
-                    cfg_scale=cfg_scale
+                    speaker_presets=presets,
+                    uploaded_voices=uploads,
+                    trim_starts=trim_starts,
+                    trim_ends=trim_ends,
+                    cfg_scale=cfg_value,
+                    inference_steps=int(steps_value),
+                    seed=int(seed_value),
+                    do_sample=bool(sample_value),
+                    temperature=temperature_value,
+                    top_p=top_p_value,
+                    min_chunk_chars=int(min_chars_value),
+                    max_chunk_chars=int(max_chars_value),
+                    chunk_pause_seconds=pause_value,
+                    normalize_voices=bool(normalize_value),
                 ):
                     final_log = log
                     
@@ -1052,7 +1143,25 @@ Or paste text directly and it will auto-assign speakers.""",
             queue=False
         ).then(
             fn=generate_podcast_wrapper,
-            inputs=[num_speakers, script_input] + speaker_selections + [cfg_scale],
+            inputs=(
+                [num_speakers, script_input]
+                + speaker_selections
+                + speaker_uploads
+                + speaker_trim_starts
+                + speaker_trim_ends
+                + [
+                    cfg_scale,
+                    inference_steps,
+                    seed,
+                    do_sample,
+                    temperature,
+                    top_p,
+                    normalize_voices,
+                    min_chunk_chars,
+                    max_chunk_chars,
+                    chunk_pause_seconds,
+                ]
+            ),
             outputs=[audio_output, complete_audio_output, log_output, streaming_status, generate_btn, stop_btn],
             queue=True  # Enable Gradio's built-in queue
         )
@@ -1114,6 +1223,9 @@ Or paste text directly and it will auto-assign speakers.""",
         - **Complete Audio** tab provides the full, uninterrupted podcast after generation
         - During generation, you can click **🛑 Stop Generation** to interrupt the process
         - The streaming indicator shows real-time generation progress
+        - Upload or record a voice for any speaker; uploaded audio overrides its preset
+        - Use trim start/end to isolate the cleanest portion of each voice reference
+        - Long scripts are chunked at periods around 1,000-2,000 characters and joined automatically
         """)
         
         # Add example scripts
@@ -1182,7 +1294,7 @@ def parse_args():
         "--inference_steps",
         type=int,
         default=10,
-        help="Number of inference steps for DDPM (not exposed to users)",
+        help="Default number of DDPM inference steps shown in Studio",
     )
     parser.add_argument(
         "--share",
@@ -1230,7 +1342,7 @@ def main():
             default_concurrency_limit=1  # Process one request at a time
         ).launch(
             share=args.share,
-            # server_port=args.port,
+            server_port=args.port,
             server_name="0.0.0.0" if args.share else "127.0.0.1",
             show_error=True,
             show_api=False  # Hide API docs for cleaner interface

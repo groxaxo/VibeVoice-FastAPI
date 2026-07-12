@@ -13,7 +13,11 @@ class OpenAITTSRequest(BaseModel):
     """OpenAI-compatible speech request."""
 
     model: str = Field(default="tts-1", description="Model name accepted for OpenAI compatibility")
-    input: str = Field(..., min_length=1, max_length=4096, description="Text to synthesize")
+    input: str = Field(
+        ...,
+        min_length=1,
+        description="Text to synthesize; long input is chunked and joined automatically",
+    )
     voice: str = Field(..., min_length=1, description="OpenAI voice alias or VibeVoice preset")
     response_format: AudioFormat = Field(default="mp3", description="Audio response format")
     speed: float = Field(default=1.0, ge=0.25, le=4.0, description="Playback speed")
@@ -41,8 +45,10 @@ class VibeVoiceGenerateRequest(BaseModel):
     script: str = Field(
         ...,
         min_length=1,
-        max_length=100000,
-        description="Script using lines such as 'Speaker 0: Hello'",
+        description=(
+            "Script using lines such as 'Speaker 0: Hello'. Long scripts are "
+            "chunked and joined automatically."
+        ),
     )
     speakers: list[SpeakerConfig] = Field(..., min_length=1, max_length=4)
     cfg_scale: float = Field(default=1.3, ge=1.0, le=2.0)

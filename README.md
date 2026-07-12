@@ -22,9 +22,9 @@ A production-ready FastAPI server that exposes the VibeVoice TTS model as an Ope
 - **AWQ-INT4 Quantization**: Drop-in [`ncoder-ai/VibeVoice-Large-AWQ`](https://huggingface.co/ncoder-ai/VibeVoice-Large-AWQ) — **8.4 GB VRAM** at **RTF ~0.70**
   on RTX 3090, faster + smaller than bnb-Q8 with no audible quality loss. See
   [AWQ quickstart](#-awq-quickstart-recommended-for-single-3090) below.
-- **Gradio UI**: Lightweight web front-end (`gradio_app/`) that talks to this
-  server over HTTP — single-speaker tab, multi-speaker dialog tab, voice picker,
-  CFG/steps/seed controls, in-browser player + download. No extra model load.
+- **VibeVoice Studio**: Gradio interface with unlimited sentence-aware generation,
+  uploaded/recorded voices, trimming, full generation controls, streaming playback,
+  and one joined download.
 - **Production Ready**: Health checks, error handling, CORS support, and comprehensive logging
 
 ## ⚡ AWQ Quickstart (recommended for single 3090)
@@ -54,60 +54,38 @@ The unified model has its Qwen2 LLM quantized to INT4 with AWQ + Marlin GEMM ker
 The audio tokenizer + diffusion head stay FP16 inside the same checkpoint, so audio
 quality is indistinguishable from FP16 at INFERENCE_STEPS=7.
 
-## 🎨 Gradio UI
+## 🎨 VibeVoice Studio (Gradio)
 
-A web front-end lives in [`gradio_app/`](./gradio_app/). It's a **client of this
-server** — no model is loaded in the Gradio process, so it doesn't use any extra
-VRAM. Use it for quick demos, voice comparison, and downloading clips without
-writing any HTTP code.
+The Studio lives in [`demo/gradio_demo.py`](./demo/gradio_demo.py). It provides
+streaming generation and loads the model directly, so run either Studio or the
+FastAPI server on a given GPU unless there is enough VRAM for both.
 
 ### Run
 
 ```bash
-# 1) Server must already be up (any of the docker / start.sh methods above)
-curl -fsS http://localhost:6969/health
-
-# 2) Launch the UI (uses the vibevoice conda env that already has gradio 6.x)
-bash gradio_app/start.sh
+python demo/gradio_demo.py \
+  --model_path microsoft/VibeVoice-1.5B \
+  --device cuda \
+  --inference_steps 10
 # → http://localhost:7860
 ```
 
-Environment overrides (all optional):
-
-| Var | Default | What it does |
-|---|---|---|
-| `VIBEVOICE_API` | `http://localhost:6969` | URL of this FastAPI server |
-| `GRADIO_HOST` | `0.0.0.0` | bind address for the UI |
-| `GRADIO_PORT` | `7860` | port for the UI |
-| `VIBEVOICE_GRADIO_PY` | `/home/op/miniconda3/envs/vibevoice/bin/python` | Python interpreter |
-
 ### Features
 
-- **Single-speaker tab** — OpenAI-compat endpoint. Text + voice + speed + format.
-- **Multi-speaker tab** — Native VibeVoice endpoint. Up to 4 voices, full
-  control over `cfg_scale`, `inference_steps`, `seed`, response format.
-  Script uses the `Speaker 0: ... / Speaker 1: ...` convention.
-- **Live status panel** — polls `/health` every 15 s (model loaded / lazy /
-  idle timeout).
-- **VRAM controls** — *Preload* forces the model into VRAM (if `LAZY_LOAD=true`);
-  *Unload* frees it before training, gaming, or any other GPU-heavy job.
-- **Filterable voice picker** — all voices from `/v1/vibevoice/voices`, grouped
-  by language (es-AR → en → others).
-- **In-browser player + download** — generated clips land in
-  `/tmp/vibevoice_out/`; Gradio 6 serves them as a download from the player.
-- **Help tab** — endpoint reference, speakers JSON shape, parameter tips.
+- **Unlimited input length** — text is packed at period boundaries into roughly
+  1,000-2,000-character model calls, then every audio result is joined in order.
+- **Up to four speakers** — use `Speaker 0: ...` / `Speaker 1: ...`; one-based
+  labels are also normalized automatically.
+- **Voice uploads and recording** — upload/record a reference per speaker or use
+  a bundled preset. Uploaded references override presets.
+- **Voice trimming and normalization** — select start/end seconds before cloning.
+- **Generation controls** — CFG, inference steps, seed, sampling, temperature,
+  top-p, chunk bounds, inter-chunk pause, and reference normalization.
+- **Streaming plus final download** — listen as chunks arrive and download the
+  single joined result when generation completes.
 
-### Smoke test without the UI
-
-```bash
-/home/op/miniconda3/envs/vibevoice/bin/python -c "
-from gradio_app.app import generate_single
-p, dt = generate_single('Hola, soy un test.', 'es-Rocio_arg_female', 'mp3', 1.0)
-print('OK', p, dt, 's')
-"
-```
-
-See [`gradio_app/README.md`](./gradio_app/README.md) for the full reference.
+The OpenAI-compatible and native FastAPI endpoints use the same unlimited
+sentence-aware chunking and ordered audio concatenation.
 
 ## 📋 Quick Start
 
@@ -208,7 +186,7 @@ start.bat
 
 - **[API README](API_README.md)** - Complete API documentation with examples, voice management, and troubleshooting
 - **[Docker Quickstart](DOCKER_QUICKSTART.md)** - Docker deployment quickstart guide
-- **[Gradio UI README](gradio_app/README.md)** - Web front-end (`gradio_app/`) — single & multi-speaker tabs, voice picker, VRAM controls
+- **[VibeVoice Studio](demo/gradio_demo.py)** - Long-form Gradio interface with voice upload, trimming, and generation controls
 
 ## 🎯 API Endpoints
 
@@ -471,18 +449,11 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - Check file permissions
 - Ensure audio files are in supported formats
 
-### Gradio UI (`gradio_app/`) won't start
-- The launcher pings `curl $VIBEVOICE_API/health` first and bails if it fails —
-  start the FastAPI server first (`docker compose up -d` or the repo's `start.sh`).
-- `ModuleNotFoundError: gradio` — the launcher defaults to
-  `/home/op/miniconda3/envs/vibevoice/bin/python` because that's the env that
-  already has gradio 6.x installed. Override with `VIBEVOICE_GRADIO_PY=/path/to/python`
-  if you installed gradio elsewhere.
-- Port 7860 already in use — set `GRADIO_PORT=7861` (or any free port).
-- UI loads but dropdown is empty / health panel shows `unreachable` —
-  the server is up but CORS or URL is wrong. Check `VIBEVOICE_API` matches
-  the server's actual bind (server defaults to `0.0.0.0:6969`; UI defaults
-  to `http://localhost:6969`).
+### VibeVoice Studio won't start
+- `ModuleNotFoundError: gradio` — install the project dependencies in the active environment.
+- CUDA out of memory — stop the separate FastAPI process or select a smaller/quantized model.
+- Port 7860 already in use — launch with `--port 7861` (or another free port).
+- No preset voices — upload or record a reference in Studio, or add supported audio files to `demo/voices/`.
 
 For more help, see the [API README](API_README.md) or open an issue.
 

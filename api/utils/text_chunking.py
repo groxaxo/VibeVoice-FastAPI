@@ -1,9 +1,4 @@
-"""Text chunking helpers shared by the API routers.
-
-The model has bounded output generation, but very long unpunctuated inputs can still
-create oversized prompts. These helpers split on sentence boundaries first and then
-apply a word-aware hard limit so every model call remains bounded.
-"""
+"""Sentence-aware text chunking shared by the API and Gradio Studio."""
 
 from __future__ import annotations
 
@@ -50,15 +45,24 @@ def _split_oversized(text: str, max_chars: int) -> list[str]:
     return chunks
 
 
-def split_text_chunks(text: str, max_chars: int = 1000) -> list[str]:
-    """Split text into bounded, non-empty chunks.
+def split_text_chunks(
+    text: str,
+    max_chars: int = 2000,
+    min_chars: int | None = None,
+) -> list[str]:
+    """Pack sentences into model-safe chunks without imposing a total text limit.
 
-    Sentence punctuation is preserved. Ellipses are protected so ``...`` does not
-    produce empty fragments. Inputs without punctuation are still bounded by
-    ``max_chars``.
+    Period boundaries are preferred and punctuation is retained. Chunks target the
+    inclusive ``min_chars``/``max_chars`` window (1,000-2,000 characters by
+    default). A final short chunk is unavoidable when the remaining text is short;
+    oversized or unpunctuated sentences fall back to lossless word-aware splitting.
     """
     if max_chars < 32:
         raise ValueError("max_chars must be at least 32")
+    if min_chars is None:
+        min_chars = min(1000, max_chars)
+    if min_chars < 1 or min_chars > max_chars:
+        raise ValueError("min_chars must be between 1 and max_chars")
 
     stripped = text.strip()
     if not stripped:
@@ -67,11 +71,34 @@ def split_text_chunks(text: str, max_chars: int = 1000) -> list[str]:
     protected = stripped.replace("...", _ELLIPSIS_TOKEN)
     parts = _SENTENCE_BOUNDARY_RE.split(protected)
 
-    chunks: list[str] = []
+    units: list[str] = []
     for part in parts:
         restored = part.replace(_ELLIPSIS_TOKEN, "...").strip()
         if not restored:
             continue
-        chunks.extend(_split_oversized(restored, max_chars))
+        units.extend(_split_oversized(restored, max_chars))
+
+    chunks: list[str] = []
+    current = ""
+    for unit in units:
+        candidate = f"{current} {unit}" if current else unit
+        if len(candidate) <= max_chars:
+            current = candidate
+            continue
+
+        if current:
+            chunks.append(current)
+        current = unit
+
+    if current:
+        chunks.append(current)
+
+    # If the tail is below the target minimum and fits when joined to the previous
+    # chunk, merge it. This keeps common inputs inside the requested range while
+    # retaining the hard maximum.
+    if len(chunks) > 1 and len(chunks[-1]) < min_chars:
+        merged = f"{chunks[-2]} {chunks[-1]}"
+        if len(merged) <= max_chars:
+            chunks[-2:] = [merged]
 
     return chunks
